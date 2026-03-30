@@ -1,0 +1,33 @@
+# dependencies
+client/node_modules/
+server/node_modules/
+
+# build output
+client/.next/
+client/out/
+client/build/
+server/dist/
+server/build/
+
+# env files
+.env
+.env.*
+!.env.example
+!server/.env.example
+!client/.env.example
+server/.env
+server/.env.local
+server/.env.development
+server/.env.production
+client/.env
+client/.env.local
+client/.env.development
+client/.env.production
+
+# build cache
+*.tsbuildinfo
+
+# misc
+.DS_Store
+Thumbs.db
+*.log
