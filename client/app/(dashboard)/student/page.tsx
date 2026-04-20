@@ -580,49 +580,55 @@ function StudentCourseCard({
   compact?: boolean;
 }) {
   return (
-    <article className="overflow-hidden rounded-[22px] border border-[#eadcf7] bg-white shadow-[0_20px_34px_-30px_rgba(82,36,163,0.65)]">
-      <div
-        className={`relative flex flex-col justify-between overflow-hidden px-7 py-7 text-white ${
-          compact ? 'min-h-[126px]' : 'min-h-[118px]'
-        } ${course.headerTone}`}
-      >
-        {course.pattern}
-        <div className="relative z-10">
-          <span className="inline-flex rounded-full bg-white/18 px-3 py-1 text-[0.62rem] font-semibold uppercase tracking-[0.14em] text-white backdrop-blur-sm">
-            In Progress
-          </span>
-        </div>
-
-        <div className="relative z-10 flex items-end justify-between gap-4">
-          <h2 className={`max-w-[180px] font-bold leading-tight tracking-[-0.04em] ${compact ? 'text-[1.18rem]' : 'text-[1.28rem]'}`}>
-            {course.title}
-          </h2>
-          <div className="shrink-0 scale-[0.72]">{course.watermark}</div>
-        </div>
-      </div>
-
-      <div className={`space-y-3.5 ${compact ? 'px-4 py-3.5' : 'px-4 py-4'}`}>
-        <div className="flex items-center gap-3">
-          <div className="grid h-8 w-8 place-items-center rounded-full bg-[#f3e9ff]">
-            <DashboardUserIcon />
+    <Link
+      href={`/material?course=${encodeURIComponent(course.title)}`}
+      className="group block overflow-hidden rounded-[22px] border border-[#eadcf7] bg-white shadow-[0_20px_34px_-30px_rgba(82,36,163,0.65)] transition hover:-translate-y-0.5 hover:border-[#d8c3fb] hover:shadow-[0_24px_38px_-30px_rgba(82,36,163,0.82)]"
+      aria-label={`Open materials for ${course.title}`}
+    >
+      <article>
+        <div
+          className={`relative flex flex-col justify-between overflow-hidden px-7 py-7 text-white ${
+            compact ? 'min-h-[126px]' : 'min-h-[118px]'
+          } ${course.headerTone}`}
+        >
+          {course.pattern}
+          <div className="relative z-10">
+            <span className="inline-flex rounded-full bg-white/18 px-3 py-1 text-[0.62rem] font-semibold uppercase tracking-[0.14em] text-white backdrop-blur-sm">
+              In Progress
+            </span>
           </div>
-          <p className="text-[0.82rem] text-[#523b72]">{course.instructor}</p>
-        </div>
 
-        <div className="space-y-2">
-          <div className="flex items-center justify-between text-[0.64rem] font-semibold uppercase tracking-[0.12em]">
-            <span className="text-[#4d2dde]">Course Progress</span>
-            <span className="text-[#2f1e47]">{course.progress}%</span>
-          </div>
-          <div className="h-1.5 rounded-full bg-[#f0defd]">
-            <div
-              className={`h-1.5 rounded-full shadow-[0_6px_10px_-8px_rgba(60,20,130,0.75)] ${course.progressTone}`}
-              style={{ width: `${course.progress}%` }}
-            />
+          <div className="relative z-10 flex items-end justify-between gap-4">
+            <h2 className={`max-w-[180px] font-bold leading-tight tracking-[-0.04em] ${compact ? 'text-[1.18rem]' : 'text-[1.28rem]'}`}>
+              {course.title}
+            </h2>
+            <div className="shrink-0 scale-[0.72] transition duration-200 group-hover:scale-[0.78]">{course.watermark}</div>
           </div>
         </div>
-      </div>
-    </article>
+
+        <div className={`space-y-3.5 ${compact ? 'px-4 py-3.5' : 'px-4 py-4'}`}>
+          <div className="flex items-center gap-3">
+            <div className="grid h-8 w-8 place-items-center rounded-full bg-[#f3e9ff]">
+              <DashboardUserIcon />
+            </div>
+            <p className="text-[0.82rem] text-[#523b72]">{course.instructor}</p>
+          </div>
+
+          <div className="space-y-2">
+            <div className="flex items-center justify-between text-[0.64rem] font-semibold uppercase tracking-[0.12em]">
+              <span className="text-[#4d2dde]">Course Progress</span>
+              <span className="text-[#2f1e47]">{course.progress}%</span>
+            </div>
+            <div className="h-1.5 rounded-full bg-[#f0defd]">
+              <div
+                className={`h-1.5 rounded-full shadow-[0_6px_10px_-8px_rgba(60,20,130,0.75)] ${course.progressTone}`}
+                style={{ width: `${course.progress}%` }}
+              />
+            </div>
+          </div>
+        </div>
+      </article>
+    </Link>
   );
 }
 

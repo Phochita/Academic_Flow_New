@@ -1,4 +1,9 @@
+'use client';
+
+import Link from 'next/link';
+import { useSearchParams } from 'next/navigation';
 import type { ReactNode } from 'react';
+import LecturerTabsNav from '@/components/lecturer/LecturerTabsNav';
 
 type LecturerStat = {
   label: string;
@@ -25,12 +30,6 @@ type PendingSubmission = {
   accent: string;
   avatarTone: string;
   initials: string;
-};
-
-type LecturerTab = {
-  label: string;
-  isActive?: boolean;
-  badge?: string;
 };
 
 function PeopleIcon() {
@@ -103,6 +102,14 @@ function ArrowRightIcon() {
   );
 }
 
+function ArrowLeftIcon() {
+  return (
+    <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+      <path d="M19 12H5m7-7-7 7 7 7" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
 function StarBadgeIcon() {
   return (
     <svg viewBox="0 0 24 24" className="h-4 w-4" fill="currentColor" aria-hidden="true">
@@ -139,14 +146,6 @@ function ApproveIcon() {
     </svg>
   );
 }
-
-const lecturerTabs: LecturerTab[] = [
-  { label: 'Stream', isActive: true },
-  { label: 'Classwork' },
-  { label: 'People' },
-  { label: 'Grades' },
-  { label: 'Analytics', badge: 'New' },
-];
 
 const lecturerStats: LecturerStat[] = [
   {
@@ -223,31 +222,71 @@ const pendingSubmissions: PendingSubmission[] = [
   },
 ];
 
-export default function LecturerDashboard() {
+function LecturerCourseCard({ course }: { course: LecturerCourse }) {
   return (
-    <div className="mx-auto max-w-[1120px]">
-      <div className="border-b border-[#eadcf7] pb-5">
-        <div className="flex flex-wrap items-center gap-x-8 gap-y-4 text-[0.94rem] text-[#4a3a68]">
-          {lecturerTabs.map((tab) => (
-            <button
-              key={tab.label}
-              className={`relative flex items-center gap-2 pb-3 font-medium transition ${
-                tab.isActive ? 'text-[#5a2ddf]' : 'text-[#4c3d69] hover:text-[#5a2ddf]'
-              }`}
-            >
-              <span>{tab.label}</span>
-              {tab.badge ? (
-                <span className="rounded-full bg-[#caf0cc] px-2.5 py-1 text-[0.68rem] font-semibold uppercase tracking-[0.12em] text-[#21743a]">
-                  {tab.badge}
-                </span>
-              ) : null}
-              {tab.isActive ? (
-                <span className="absolute inset-x-0 bottom-0 h-1 rounded-full bg-[#6b35e3]" />
-              ) : null}
-            </button>
-          ))}
+    <article className="rounded-[26px] border border-[#eadcf7] bg-white p-5 shadow-[0_24px_44px_-38px_rgba(82,36,163,0.85)]">
+      <div className="flex items-start justify-between gap-4">
+        <div className={`grid h-16 w-16 place-items-center rounded-[18px] ${course.iconTone}`}>
+          {course.icon}
+        </div>
+        <span className="rounded-xl bg-[#f3e8ff] px-3 py-1.5 text-[0.72rem] font-semibold uppercase tracking-[0.12em] text-[#6d38de]">
+          {course.semester}
+        </span>
+      </div>
+
+      <h3 className="mt-6 text-[1.7rem] font-bold leading-tight tracking-[-0.04em] text-[#26173d]">{course.title}</h3>
+      <p className="mt-2 text-[0.96rem] text-[#66527f]">
+        {course.code} / {course.program}
+      </p>
+
+      <div className="mt-5 space-y-3 text-[0.94rem] text-[#58496d]">
+        <div className="flex items-center gap-3">
+          <span className="text-[#6936de]">
+            <StudentIcon />
+          </span>
+          <span>{course.students}</span>
+        </div>
+        <div className="flex items-center gap-3">
+          <span className="text-[#6936de]">
+            <CalendarIcon />
+          </span>
+          <span>{course.schedule}</span>
         </div>
       </div>
+
+      <div className="mt-6 grid grid-cols-2 gap-3">
+        <button className="rounded-[16px] bg-[#e0c7ff] px-4 py-3 text-sm font-semibold text-[#5a2ddf] transition hover:bg-[#d5b8ff]">
+          Manage Course
+        </button>
+        <button className="rounded-[16px] border border-[#e4d8fb] bg-white px-4 py-3 text-sm font-semibold text-[#53426d] transition hover:border-[#d4c1f7] hover:text-[#4f2ccf]">
+          Quick Attendance
+        </button>
+      </div>
+    </article>
+  );
+}
+
+function CreateCourseCard() {
+  return (
+    <Link
+      href="/lecturer/create-course"
+      className="flex min-h-[360px] items-center justify-center rounded-[26px] border-2 border-dashed border-[#c9afe9] bg-[#fff8ff] p-6 text-center shadow-[0_16px_32px_-38px_rgba(84,39,174,0.8)] transition hover:-translate-y-0.5 hover:border-[#b593e8] hover:bg-white"
+    >
+      <div>
+        <div className="mx-auto grid h-16 w-16 place-items-center rounded-full bg-[#f3e1ff] text-[#7a4be9]">
+          <PlusIcon />
+        </div>
+        <h3 className="mt-6 text-[1.7rem] font-bold tracking-[-0.04em] text-[#503466]">Create New Course</h3>
+        <p className="mt-3 text-[0.94rem] text-[#88779f]">Set up a new curriculum module</p>
+      </div>
+    </Link>
+  );
+}
+
+function LecturerOverviewView() {
+  return (
+    <div className="space-y-6">
+      <LecturerTabsNav />
 
       <div className="grid gap-6 pt-5 xl:grid-cols-[minmax(0,1fr)_320px]">
         <section className="space-y-6">
@@ -257,8 +296,8 @@ export default function LecturerDashboard() {
                 Welcome Back, Dr. Thorne
               </h1>
               <p className="max-w-3xl text-base leading-7 text-[#5f4a79]">
-                You have 4 courses active this semester. There are 12 assignments pending your review and a
-                faculty meeting scheduled for 3:00 PM.
+                You have 4 courses active this semester. There are 12 assignments pending your review and a faculty
+                meeting scheduled for 3:00 PM.
               </p>
             </div>
 
@@ -280,76 +319,28 @@ export default function LecturerDashboard() {
             </div>
           </div>
 
-          <section className="space-y-5">
+          <section id="manage-courses" className="space-y-5">
             <div className="flex flex-wrap items-center justify-between gap-4">
               <div className="flex items-center gap-3">
                 <span className="h-8 w-2 rounded-full bg-[#6d38de]" aria-hidden="true" />
                 <h2 className="text-[1.7rem] font-bold tracking-[-0.04em] text-[#26173d]">Manage My Courses</h2>
               </div>
 
-              <button className="inline-flex items-center gap-2 text-sm font-semibold text-[#5a2ddf] transition hover:gap-3">
+              <Link
+                href="/lecturer?view=courses"
+                className="inline-flex items-center gap-2 text-sm font-semibold text-[#5a2ddf] transition hover:gap-3"
+              >
                 View All Courses
                 <ArrowRightIcon />
-              </button>
+              </Link>
             </div>
 
             <div className="grid gap-5 md:grid-cols-2">
               {lecturerCourses.map((course) => (
-                <article
-                  key={course.title}
-                  className="rounded-[26px] border border-[#eadcf7] bg-white p-5 shadow-[0_24px_44px_-38px_rgba(82,36,163,0.85)]"
-                >
-                  <div className="flex items-start justify-between gap-4">
-                    <div className={`grid h-16 w-16 place-items-center rounded-[18px] ${course.iconTone}`}>
-                      {course.icon}
-                    </div>
-                    <span className="rounded-xl bg-[#f3e8ff] px-3 py-1.5 text-[0.72rem] font-semibold uppercase tracking-[0.12em] text-[#6d38de]">
-                      {course.semester}
-                    </span>
-                  </div>
-
-                  <h3 className="mt-6 text-[1.7rem] font-bold leading-tight tracking-[-0.04em] text-[#26173d]">
-                    {course.title}
-                  </h3>
-                  <p className="mt-2 text-[0.96rem] text-[#66527f]">
-                    {course.code} / {course.program}
-                  </p>
-
-                  <div className="mt-5 space-y-3 text-[0.94rem] text-[#58496d]">
-                    <div className="flex items-center gap-3">
-                      <span className="text-[#6936de]">
-                        <StudentIcon />
-                      </span>
-                      <span>{course.students}</span>
-                    </div>
-                    <div className="flex items-center gap-3">
-                      <span className="text-[#6936de]">
-                        <CalendarIcon />
-                      </span>
-                      <span>{course.schedule}</span>
-                    </div>
-                  </div>
-
-                  <div className="mt-6 grid grid-cols-2 gap-3">
-                    <button className="rounded-[16px] bg-[#e0c7ff] px-4 py-3 text-sm font-semibold text-[#5a2ddf] transition hover:bg-[#d5b8ff]">
-                      Manage Course
-                    </button>
-                    <button className="rounded-[16px] border border-[#e4d8fb] bg-white px-4 py-3 text-sm font-semibold text-[#53426d] transition hover:border-[#d4c1f7] hover:text-[#4f2ccf]">
-                      Quick Attendance
-                    </button>
-                  </div>
-                </article>
+                <LecturerCourseCard key={course.title} course={course} />
               ))}
 
-              <article className="flex min-h-[360px] items-center justify-center rounded-[26px] border-2 border-dashed border-[#c9afe9] bg-[#fff8ff] p-6 shadow-[0_16px_32px_-38px_rgba(84,39,174,0.8)]">
-                <div className="text-center">
-                  <div className="mx-auto grid h-16 w-16 place-items-center rounded-full bg-[#f3e1ff] text-[#7a4be9]">
-                    <PlusIcon />
-                  </div>
-                  <h3 className="mt-6 text-[1.7rem] font-bold tracking-[-0.04em] text-[#503466]">Create New Course</h3>
-                  <p className="mt-3 text-[0.94rem] text-[#88779f]">Set up a new curriculum module</p>
-                </div>
-              </article>
+              <CreateCourseCard />
             </div>
           </section>
         </section>
@@ -411,4 +402,54 @@ export default function LecturerDashboard() {
       </div>
     </div>
   );
+}
+
+function LecturerCoursesView() {
+  return (
+    <div className="space-y-6 pt-4">
+      <div className="flex flex-wrap items-end justify-between gap-5">
+        <div className="space-y-2">
+          <h1 className="text-3xl font-bold tracking-[-0.04em] text-[#2f1e47] md:text-[2.75rem]">My Courses</h1>
+          <p className="max-w-2xl text-base text-[#5f4a79]">
+            Review your active classes, meeting times, and enrollment snapshots before you manage content or add a new
+            course.
+          </p>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="rounded-full border border-[#eadcf7] bg-white px-4 py-2 text-sm font-semibold text-[#5f4a79] shadow-[0_12px_24px_-24px_rgba(90,45,223,1)]">
+            {lecturerCourses.length} active courses
+          </div>
+          <Link
+            href="/lecturer/create-course"
+            className="inline-flex items-center gap-2 rounded-full bg-[linear-gradient(135deg,#7641e8_0%,#9a73ef_100%)] px-5 py-2.5 text-sm font-semibold text-white shadow-[0_18px_28px_-20px_rgba(118,65,232,0.95)] transition hover:scale-[1.01]"
+          >
+            <PlusIcon />
+            Create New Course
+          </Link>
+          <Link
+            href="/lecturer"
+            className="inline-flex items-center gap-2 rounded-full border border-[#dbc8fa] bg-white px-5 py-2.5 text-sm font-semibold text-[#5a2ddf] shadow-[0_16px_28px_-24px_rgba(90,45,223,0.95)] transition hover:border-[#cdb5f7]"
+          >
+            <ArrowLeftIcon />
+            Back to Dashboard
+          </Link>
+        </div>
+      </div>
+
+      <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3">
+        {lecturerCourses.map((course) => (
+          <LecturerCourseCard key={course.title} course={course} />
+        ))}
+        <CreateCourseCard />
+      </div>
+    </div>
+  );
+}
+
+export default function LecturerDashboard() {
+  const searchParams = useSearchParams();
+  const isCourseView = searchParams.get('view') === 'courses';
+
+  return <div className="mx-auto max-w-[1120px]">{isCourseView ? <LecturerCoursesView /> : <LecturerOverviewView />}</div>;
 }
