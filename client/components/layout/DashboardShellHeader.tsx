@@ -2,10 +2,14 @@
 
 import { usePathname, useSearchParams } from 'next/navigation';
 import DashboardHeader from '@/components/layout/DashboardHeader';
+import { getUserInitials, readDemoUser } from '@/lib/demo-user';
 
 export default function DashboardShellHeader() {
   const pathname = usePathname();
   const searchParams = useSearchParams();
+  const fallbackInitials = pathname.startsWith('/lecturer') ? 'AT' : 'AR';
+  const demoUser = typeof window === 'undefined' ? null : readDemoUser();
+  const initials = getUserInitials(demoUser?.fullName, fallbackInitials);
 
   const searchPlaceholder = (() => {
     if (pathname === '/student') {
@@ -34,8 +38,5 @@ export default function DashboardShellHeader() {
 
     return 'Search resources...';
   })();
-
-  const initials = pathname.startsWith('/lecturer') ? 'AT' : 'AR';
-
   return <DashboardHeader searchPlaceholder={searchPlaceholder} initials={initials} />;
 }

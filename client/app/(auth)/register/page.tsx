@@ -1,11 +1,167 @@
 
+'use client';
+
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
+import { ChangeEvent, FormEvent, useMemo, useState } from 'react';
+import { getDashboardPath, saveDemoUser } from '@/lib/demo-user';
+
+type Role = 'student' | 'lecturer' | 'admin';
+
+type RegisterFormState = {
+  email: string;
+  firstName: string;
+  lastName: string;
+  password: string;
+  role: Role;
+};
+
+const initialFormState: RegisterFormState = {
+  email: '',
+  firstName: '',
+  lastName: '',
+  password: '',
+  role: 'student',
+};
+
+const roleOptions: Array<{ label: string; value: Role }> = [
+  { label: 'Student', value: 'student' },
+  { label: 'Lecturer', value: 'lecturer' },
+  { label: 'Admin', value: 'admin' },
+];
+
+const getApiBaseUrl = () => {
+  const configuredBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL?.trim();
+  return configuredBaseUrl?.replace(/\/$/, '') || 'http://localhost:4000';
+};
+
+const getErrorMessage = (payload: unknown, fallback: string) => {
+  if (!payload || typeof payload !== 'object') {
+    return fallback;
+  }
+
+  const response = payload as {
+    error?: string;
+    issues?: Array<{ message?: string }>;
+  };
+
+  if (Array.isArray(response.issues) && response.issues.length > 0) {
+    return response.issues
+      .map((issue) => issue.message?.trim())
+      .filter(Boolean)
+      .join(' ');
+  }
+
+  return response.error?.trim() || fallback;
+};
 
 export default function RegisterPage() {
+  const router = useRouter();
+  const apiBaseUrl = useMemo(() => getApiBaseUrl(), []);
+  const [form, setForm] = useState<RegisterFormState>(initialFormState);
+  const [errorMessage, setErrorMessage] = useState('');
+  const [successMessage, setSuccessMessage] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  const handleChange = (event: ChangeEvent<HTMLInputElement>) => {
+    const { name, value } = event.target;
+
+    setForm((currentForm) => {
+      if (name === 'role') {
+        return {
+          ...currentForm,
+          role: value as Role,
+        };
+      }
+
+      return {
+        ...currentForm,
+        [name]: value,
+      } as RegisterFormState;
+    });
+  };
+
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+
+    const trimmedForm = {
+      email: form.email.trim().toLowerCase(),
+      firstName: form.firstName.trim(),
+      lastName: form.lastName.trim(),
+      password: form.password,
+      role: form.role,
+    };
+
+    if (!trimmedForm.firstName || !trimmedForm.lastName || !trimmedForm.email || !trimmedForm.password) {
+      setSuccessMessage('');
+      setErrorMessage('Please complete all fields before creating your account.');
+      return;
+    }
+
+    if (trimmedForm.password.length < 8) {
+      setSuccessMessage('');
+      setErrorMessage('Password must be at least 8 characters long.');
+      return;
+    }
+
+    setErrorMessage('');
+    setSuccessMessage('');
+    setIsSubmitting(true);
+
+    try {
+      const response = await fetch(`${apiBaseUrl}/api/auth/register`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(trimmedForm),
+      });
+
+      const payload = (await response.json().catch(() => null)) as
+        | {
+            message?: string;
+            user?: {
+              email?: string | null;
+              fullName?: string | null;
+              role?: Role;
+            } | null;
+          }
+        | null;
+
+      if (!response.ok) {
+        throw new Error(getErrorMessage(payload, 'Unable to create your account right now.'));
+      }
+
+      const nextRole = payload?.user?.role ?? trimmedForm.role;
+      const nextFullName =
+        payload?.user?.fullName?.trim() || [trimmedForm.firstName, trimmedForm.lastName].filter(Boolean).join(' ');
+
+      saveDemoUser({
+        createdAt: new Date().toISOString(),
+        email: payload?.user?.email?.trim() || trimmedForm.email,
+        fullName: nextFullName,
+        role: nextRole,
+      });
+
+      setForm(initialFormState);
+      setSuccessMessage(payload?.message?.trim() || 'Account created successfully. Redirecting to your dashboard...');
+
+      window.setTimeout(() => {
+        router.push(getDashboardPath(nextRole));
+      }, 1200);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unable to create your account right now.';
+      setSuccessMessage('');
+      setErrorMessage(message);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
   return (
-    <div className="min-h-screen flex font-sans text-[15px]">
+    <div className="flex min-h-screen font-sans text-[15px]">
       {/* Left Side - Visual/Gradient (Consistent with Login) */}
-      <div className="hidden lg:flex w-1/2 gradient-bg px-10 py-10 flex-col justify-between text-white relative overflow-hidden">
+      <div className="gradient-bg relative hidden w-1/2 flex-col justify-between overflow-hidden px-10 py-10 text-white lg:flex">
         <div className="relative z-10">
           <div className="flex items-center space-x-2 mb-12">
             <div className="w-10 h-10 bg-white/20 backdrop-blur-md rounded-xl flex items-center justify-center font-bold text-xl">
@@ -59,31 +215,46 @@ export default function RegisterPage() {
           <h1 className="text-2xl font-bold text-text-primary mb-2">Create Account</h1>
           <p className="text-text-secondary mb-7">Join the AcaFlow community today.</p>
 
-          <form className="space-y-5">
+          <form className="space-y-5" onSubmit={handleSubmit}>
             <div className="grid grid-cols-2 gap-4">
                <div>
-                  <label className="block text-sm font-semibold text-text-primary mb-2">First Name</label>
-                  <input 
-                     type="text" 
+                  <label htmlFor="firstName" className="block text-sm font-semibold text-text-primary mb-2">First Name</label>
+                  <input
+                     id="firstName"
+                     name="firstName"
+                     type="text"
+                     value={form.firstName}
+                     onChange={handleChange}
                      placeholder="John"
+                     autoComplete="given-name"
                      className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:border-primary focus:ring-2 focus:ring-primary/20 outline-none transition-all"
                   />
                </div>
                <div>
-                  <label className="block text-sm font-semibold text-text-primary mb-2">Last Name</label>
-                  <input 
-                     type="text" 
+                  <label htmlFor="lastName" className="block text-sm font-semibold text-text-primary mb-2">Last Name</label>
+                  <input
+                     id="lastName"
+                     name="lastName"
+                     type="text"
+                     value={form.lastName}
+                     onChange={handleChange}
                      placeholder="Doe"
+                     autoComplete="family-name"
                      className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:border-primary focus:ring-2 focus:ring-primary/20 outline-none transition-all"
                   />
                </div>
             </div>
 
             <div>
-              <label className="block text-sm font-semibold text-text-primary mb-2">Email Address</label>
-              <input 
-                type="email" 
+              <label htmlFor="email" className="block text-sm font-semibold text-text-primary mb-2">Email Address</label>
+              <input
+                id="email"
+                name="email"
+                type="email"
+                value={form.email}
+                onChange={handleChange}
                 placeholder="name@university.edu"
+                autoComplete="email"
                 className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:border-primary focus:ring-2 focus:ring-primary/20 outline-none transition-all"
               />
             </div>
@@ -92,11 +263,18 @@ export default function RegisterPage() {
             <div>
                <label className="block text-sm font-semibold text-text-primary mb-3">I am a...</label>
                <div className="grid grid-cols-3 gap-3">
-                  {['Student', 'Lecturer', 'Admin'].map((role) => (
-                     <label key={role} className="relative cursor-pointer group">
-                        <input type="radio" name="role" value={role.toLowerCase()} className="peer sr-only" defaultChecked={role === 'Student'} />
+                  {roleOptions.map((roleOption) => (
+                     <label key={roleOption.value} className="relative cursor-pointer group">
+                        <input
+                          type="radio"
+                          name="role"
+                          value={roleOption.value}
+                          checked={form.role === roleOption.value}
+                          onChange={handleChange}
+                          className="peer sr-only"
+                        />
                         <div className="px-3 py-2.5 text-center rounded-xl border border-gray-200 text-sm font-bold text-text-secondary peer-checked:border-primary peer-checked:text-primary peer-checked:bg-primary/5 transition-all group-hover:bg-gray-50">
-                           {role}
+                           {roleOption.label}
                         </div>
                      </label>
                   ))}
@@ -104,20 +282,37 @@ export default function RegisterPage() {
             </div>
             
             <div>
-              <label className="block text-sm font-semibold text-text-primary mb-2">Password</label>
-              <input 
-                type="password" 
-                placeholder="••••••••"
-                className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:border-primary focus:ring-2 focus:ring-primary/20 outline-none transition-all"
+              <label htmlFor="password" className="block text-sm font-semibold text-text-primary mb-2">Password</label>
+              <input
+                id="password"
+                name="password"
+                type="password"
+                value={form.password}
+                onChange={handleChange}
+                placeholder="At least 8 characters"
+                autoComplete="new-password"
+                className="mb-3 w-full px-4 py-3 rounded-xl border border-gray-200 focus:border-primary focus:ring-2 focus:ring-primary/20 outline-none transition-all"
               />
             </div>
+
+            {errorMessage ? (
+              <p className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700" aria-live="polite">
+                {errorMessage}
+              </p>
+            ) : null}
+
+            {successMessage ? (
+              <p className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700" aria-live="polite">
+                {successMessage}
+              </p>
+            ) : null}
 
              <div className="text-xs text-text-secondary leading-relaxed">
                By clicking &ldquo;Create Account&rdquo;, you agree to our <Link href="#" className="font-bold text-primary underline">Terms of Service</Link> and <Link href="#" className="font-bold text-primary underline">Privacy Policy</Link>.
             </div>
 
-            <button className="w-full py-3.5 rounded-xl gradient-bg text-white font-bold shadow-soft hover:opacity-90 transition-all">
-              Create Account
+            <button type="submit" disabled={isSubmitting} className="w-full py-3.5 rounded-xl gradient-bg text-white font-bold shadow-soft hover:opacity-90 transition-all disabled:cursor-not-allowed disabled:opacity-70">
+              {isSubmitting ? 'Creating Account...' : 'Create Account'}
             </button>
           </form>
 
