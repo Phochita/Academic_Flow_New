@@ -26,6 +26,14 @@ const isDatabaseQueryError = (
   return candidate.name === "DrizzleQueryError" || typeof candidate.query === "string";
 };
 
+const isMissingEnvironmentVariableError = (error: unknown): error is Error => {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  return /^Missing .+ environment variable\.$/.test(error.message);
+};
+
 app.use(
   cors({
     credentials: true,
@@ -90,6 +98,7 @@ app.use((error: unknown, _req: express.Request, res: express.Response, _next: ex
   if (isDatabaseQueryError(error)) {
     const causeCode = error.cause?.code?.trim().toUpperCase();
     const causeMessage = error.cause?.message?.trim().toLowerCase() ?? "";
+    const errorMessage = error.message?.trim().toLowerCase() ?? "";
 
     if (causeCode === "ENOTFOUND") {
       return res.status(503).json({
@@ -103,8 +112,20 @@ app.use((error: unknown, _req: express.Request, res: express.Response, _next: ex
       });
     }
 
+    if (causeCode === "42703" || causeMessage.includes("column") || errorMessage.includes("column")) {
+      return res.status(500).json({
+        error: "Database schema is out of date. Apply the latest migration SQL to this Supabase database.",
+      });
+    }
+
     return res.status(500).json({
       error: "Database query failed. Check the current Supabase database connection and make sure migrations have been applied.",
+    });
+  }
+
+  if (isMissingEnvironmentVariableError(error)) {
+    return res.status(500).json({
+      error: `${error.message} Check the backend Vercel environment variables and redeploy.`,
     });
   }
 
