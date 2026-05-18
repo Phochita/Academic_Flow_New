@@ -1,12 +1,5 @@
 import cors = require("cors");
 import express = require("express");
-import authRoutes = require("./routes/auth");
-import assignmentRoutes = require("./routes/assignments");
-import attendanceRoutes = require("./routes/attendance");
-import courseRoutes = require("./routes/courses");
-import profileRoutes = require("./routes/profile");
-import subscriptionRoutes = require("./routes/subscriptions");
-import aiRoutes = require("./routes/ai");
 import httpUtils = require("./utils/http");
 
 const { HttpError, isHttpError, isZodError } = httpUtils;
@@ -49,6 +42,14 @@ app.get("/health", (_req, res) => {
     timestamp: new Date().toISOString(),
   });
 });
+
+const authRoutes = require("./routes/auth");
+const assignmentRoutes = require("./routes/assignments");
+const attendanceRoutes = require("./routes/attendance");
+const courseRoutes = require("./routes/courses");
+const profileRoutes = require("./routes/profile");
+const subscriptionRoutes = require("./routes/subscriptions");
+const aiRoutes = require("./routes/ai");
 
 app.use("/api/auth", authRoutes);
 app.use("/api/profile", profileRoutes);
