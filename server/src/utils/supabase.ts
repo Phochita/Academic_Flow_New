@@ -25,10 +25,6 @@ const getRequiredEnv = (name: keyof typeof envFallbacks) => {
   return value;
 };
 
-const supabaseUrl = getRequiredEnv("SUPABASE_URL");
-const supabaseAnonKey = getRequiredEnv("SUPABASE_ANON_KEY");
-const supabaseServiceRoleKey = getRequiredEnv("SUPABASE_SERVICE_ROLE_KEY");
-
 const clientOptions = {
   auth: {
     autoRefreshToken: false,
@@ -36,7 +32,36 @@ const clientOptions = {
   },
 };
 
-const createSupabaseClient = () => supabaseJs.createClient(supabaseUrl, supabaseAnonKey, clientOptions);
-const supabaseAdmin = supabaseJs.createClient(supabaseUrl, supabaseServiceRoleKey, clientOptions);
+let cachedSupabaseAdmin: ReturnType<typeof supabaseJs.createClient> | null = null;
 
-export = { createSupabaseClient, supabaseAdmin };
+const getSupabaseConfig = () => ({
+  anonKey: getRequiredEnv("SUPABASE_ANON_KEY"),
+  serviceRoleKey: getRequiredEnv("SUPABASE_SERVICE_ROLE_KEY"),
+  url: getRequiredEnv("SUPABASE_URL"),
+});
+
+const createSupabaseClient = () => {
+  const config = getSupabaseConfig();
+
+  return supabaseJs.createClient(config.url, config.anonKey, clientOptions);
+};
+
+const getSupabaseAdmin = () => {
+  if (!cachedSupabaseAdmin) {
+    const config = getSupabaseConfig();
+    cachedSupabaseAdmin = supabaseJs.createClient(config.url, config.serviceRoleKey, clientOptions);
+  }
+
+  return cachedSupabaseAdmin;
+};
+
+const supabaseAdmin = new Proxy({} as ReturnType<typeof supabaseJs.createClient>, {
+  get(_target, prop) {
+    const target = getSupabaseAdmin();
+    const value = Reflect.get(target, prop);
+
+    return typeof value === "function" ? value.bind(target) : value;
+  },
+});
+
+export = { createSupabaseClient, getSupabaseAdmin, supabaseAdmin };

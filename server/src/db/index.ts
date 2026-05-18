@@ -9,14 +9,47 @@ const envPath = path.resolve(__dirname, "../../.env");
 
 dotenv.config({ path: envPath });
 
-const databaseUrl = process.env.DATABASE_URL?.trim();
+let cachedSql: ReturnType<typeof postgres> | null = null;
+let cachedDb: ReturnType<typeof drizzleOrm.drizzle> | null = null;
 
-if (!databaseUrl) {
-  throw new Error("Missing DATABASE_URL environment variable.");
-}
+const getDatabaseUrl = () => {
+  const databaseUrl = process.env.DATABASE_URL?.trim();
 
-// Supabase pooler connections can reject prepared statements, so keep them off here.
-const sql = postgres(databaseUrl, { prepare: false });
-const db = drizzleOrm.drizzle(sql, { schema });
+  if (!databaseUrl) {
+    throw new Error("Missing DATABASE_URL environment variable.");
+  }
 
-export = { sql, db };
+  return databaseUrl;
+};
+
+const getSql = () => {
+  if (!cachedSql) {
+    // Supabase pooler connections can reject prepared statements, so keep them off here.
+    cachedSql = postgres(getDatabaseUrl(), { prepare: false });
+  }
+
+  return cachedSql;
+};
+
+const getDb = () => {
+  if (!cachedDb) {
+    cachedDb = drizzleOrm.drizzle(getSql(), { schema });
+  }
+
+  return cachedDb;
+};
+
+const lazyProxy = <T extends object>(getTarget: () => T) =>
+  new Proxy({} as T, {
+    get(_target, prop) {
+      const target = getTarget();
+      const value = Reflect.get(target, prop);
+
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+
+const sql = lazyProxy(getSql);
+const db = lazyProxy(getDb);
+
+export = { sql, db, getDb, getSql };
