@@ -4,9 +4,10 @@
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { ChangeEvent, FormEvent, useMemo, useState } from 'react';
-import { getDashboardPath, saveDemoUser } from '@/lib/demo-user';
+import PublicRouteRedirect from '@/components/auth/PublicRouteRedirect';
+import { buildSessionFromPayload, getApiBaseUrl, getDashboardPath, saveAuthSession } from '@/lib/auth';
 
-type Role = 'student' | 'lecturer' | 'admin';
+type Role = 'student' | 'lecturer';
 
 type RegisterFormState = {
   email: string;
@@ -27,13 +28,7 @@ const initialFormState: RegisterFormState = {
 const roleOptions: Array<{ label: string; value: Role }> = [
   { label: 'Student', value: 'student' },
   { label: 'Lecturer', value: 'lecturer' },
-  { label: 'Admin', value: 'admin' },
 ];
-
-const getApiBaseUrl = () => {
-  const configuredBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL?.trim();
-  return configuredBaseUrl?.replace(/\/$/, '') || 'http://localhost:4000';
-};
 
 const getErrorMessage = (payload: unknown, fallback: string) => {
   if (!payload || typeof payload !== 'object') {
@@ -59,6 +54,7 @@ export default function RegisterPage() {
   const router = useRouter();
   const apiBaseUrl = useMemo(() => getApiBaseUrl(), []);
   const [form, setForm] = useState<RegisterFormState>(initialFormState);
+  const [isPasswordVisible, setIsPasswordVisible] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -77,7 +73,7 @@ export default function RegisterPage() {
       return {
         ...currentForm,
         [name]: value,
-      } as RegisterFormState;
+      };
     });
   };
 
@@ -132,23 +128,29 @@ export default function RegisterPage() {
         throw new Error(getErrorMessage(payload, 'Unable to create your account right now.'));
       }
 
-      const nextRole = payload?.user?.role ?? trimmedForm.role;
-      const nextFullName =
-        payload?.user?.fullName?.trim() || [trimmedForm.firstName, trimmedForm.lastName].filter(Boolean).join(' ');
-
-      saveDemoUser({
-        createdAt: new Date().toISOString(),
-        email: payload?.user?.email?.trim() || trimmedForm.email,
-        fullName: nextFullName,
-        role: nextRole,
-      });
+      const session = buildSessionFromPayload(payload ?? {});
 
       setForm(initialFormState);
-      setSuccessMessage(payload?.message?.trim() || 'Account created successfully. Redirecting to your dashboard...');
+      if (session) {
+        setSuccessMessage(payload?.message?.trim() || 'Account created successfully. Redirecting to your dashboard...');
+        const nextPath = getDashboardPath(session.user.role);
 
-      window.setTimeout(() => {
-        router.push(getDashboardPath(nextRole));
-      }, 1200);
+        saveAuthSession(session);
+        router.replace(nextPath);
+
+        window.setTimeout(() => {
+          if (window.location.pathname !== nextPath) {
+            window.location.replace(nextPath);
+          }
+        }, 150);
+
+        return;
+      }
+
+      setSuccessMessage(
+        payload?.message?.trim() ||
+          `Account created. Check ${trimmedForm.email} for your confirmation email before signing in.`,
+      );
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unable to create your account right now.';
       setSuccessMessage('');
@@ -160,6 +162,7 @@ export default function RegisterPage() {
 
   return (
     <div className="flex min-h-screen font-sans text-[15px]">
+      <PublicRouteRedirect />
       {/* Left Side - Visual/Gradient (Consistent with Login) */}
       <div className="gradient-bg relative hidden w-1/2 flex-col justify-between overflow-hidden px-10 py-10 text-white lg:flex">
         <div className="relative z-10">
@@ -259,10 +262,9 @@ export default function RegisterPage() {
               />
             </div>
 
-            {/* Role Selection - Strict Requirement */}
             <div>
                <label className="block text-sm font-semibold text-text-primary mb-3">I am a...</label>
-               <div className="grid grid-cols-3 gap-3">
+               <div className="grid grid-cols-2 gap-3">
                   {roleOptions.map((roleOption) => (
                      <label key={roleOption.value} className="relative cursor-pointer group">
                         <input
@@ -280,19 +282,31 @@ export default function RegisterPage() {
                   ))}
                </div>
             </div>
+
+            <div className="rounded-xl border border-violet-100 bg-violet-50 px-4 py-3 text-sm text-violet-900">
+              Public signup allows only `Student` and `Lecturer`. `Admin` accounts are created internally only.
+            </div>
             
             <div>
               <label htmlFor="password" className="block text-sm font-semibold text-text-primary mb-2">Password</label>
               <input
                 id="password"
                 name="password"
-                type="password"
+                type={isPasswordVisible ? 'text' : 'password'}
                 value={form.password}
                 onChange={handleChange}
                 placeholder="At least 8 characters"
                 autoComplete="new-password"
                 className="mb-3 w-full px-4 py-3 rounded-xl border border-gray-200 focus:border-primary focus:ring-2 focus:ring-primary/20 outline-none transition-all"
               />
+              <button
+                type="button"
+                onClick={() => setIsPasswordVisible((currentValue) => !currentValue)}
+                aria-label={isPasswordVisible ? 'Hide password' : 'Show password'}
+                className="text-sm font-semibold text-primary transition hover:opacity-80"
+              >
+                {isPasswordVisible ? 'Hide password' : 'Show password'}
+              </button>
             </div>
 
             {errorMessage ? (

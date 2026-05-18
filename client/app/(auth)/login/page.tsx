@@ -1,4 +1,10 @@
+'use client';
+
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
+import { ChangeEvent, FormEvent, useMemo, useState } from 'react';
+import PublicRouteRedirect from '@/components/auth/PublicRouteRedirect';
+import { buildSessionFromPayload, getApiBaseUrl, getDashboardPath, saveAuthSession } from '@/lib/auth';
 
 function BrandIcon() {
   return (
@@ -68,8 +74,100 @@ function GoogleIcon() {
 }
 
 export default function LoginPage() {
+  const router = useRouter();
+  const apiBaseUrl = useMemo(() => getApiBaseUrl(), []);
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [isPasswordVisible, setIsPasswordVisible] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [errorMessage, setErrorMessage] = useState('');
+  const [successMessage, setSuccessMessage] = useState('');
+
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+
+    const normalizedEmail = email.trim().toLowerCase();
+
+    if (!normalizedEmail || !password) {
+      setSuccessMessage('');
+      setErrorMessage('Enter both your email address and password.');
+      return;
+    }
+
+    setErrorMessage('');
+    setSuccessMessage('');
+    setIsSubmitting(true);
+
+    try {
+      const response = await fetch(`${apiBaseUrl}/api/auth/login`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          email: normalizedEmail,
+          password,
+        }),
+      });
+
+      const payload = (await response.json().catch(() => null)) as
+        | {
+            error?: string;
+            issues?: Array<{ message?: string }>;
+            session?: {
+              accessToken?: string | null;
+              expiresAt?: number | null;
+              refreshToken?: string | null;
+              tokenType?: string | null;
+            } | null;
+            user?: {
+              email?: string | null;
+              fullName?: string | null;
+              id?: string | null;
+              isPro?: boolean | null;
+              role?: string | null;
+            } | null;
+          }
+        | null;
+
+      if (!response.ok) {
+        const message =
+          payload?.issues?.map((issue) => issue.message?.trim()).filter(Boolean).join(' ') ||
+          payload?.error?.trim() ||
+          'Unable to sign in right now.';
+        throw new Error(message);
+      }
+
+      const session = buildSessionFromPayload(payload ?? {});
+
+      if (!session) {
+        throw new Error('Login succeeded but no usable session was returned.');
+      }
+
+      saveAuthSession(session);
+      setSuccessMessage('Login successful. Redirecting to your dashboard...');
+
+      const nextPath = getDashboardPath(session.user.role);
+
+      router.replace(nextPath);
+
+      window.setTimeout(() => {
+        if (window.location.pathname !== nextPath) {
+          window.location.replace(nextPath);
+        }
+      }, 150);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unable to sign in right now.';
+      setSuccessMessage('');
+      setErrorMessage(message);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
   return (
     <main className="min-h-screen bg-[#f8efff] text-[15px]">
+      <PublicRouteRedirect />
       <div className="grid min-h-screen lg:grid-cols-[1.02fr_1fr]">
         <section className="relative overflow-hidden bg-[linear-gradient(140deg,#6d38de_0%,#8357eb_48%,#a37ef6_100%)] px-7 py-8 text-white sm:px-10 lg:px-12 lg:py-10">
           <div className="absolute inset-y-0 right-0 hidden w-px bg-white/15 lg:block" />
@@ -186,7 +284,7 @@ export default function LoginPage() {
               </p>
             </div>
 
-            <form className="mt-10 space-y-6">
+            <form className="mt-10 space-y-6" onSubmit={handleSubmit}>
               <div>
                 <label htmlFor="email" className="mb-3 block text-[0.9rem] font-semibold uppercase tracking-[0.24em] text-[#68517f]">
                   Email Address
@@ -196,7 +294,10 @@ export default function LoginPage() {
                   <input
                     id="email"
                     type="email"
+                    value={email}
+                    onChange={(event: ChangeEvent<HTMLInputElement>) => setEmail(event.target.value)}
                     placeholder="scholar@institution.edu"
+                    autoComplete="email"
                     className="w-full bg-transparent text-[1rem] text-[#2d1852] outline-none placeholder:text-[#ab99c6]"
                   />
                 </div>
@@ -210,15 +311,35 @@ export default function LoginPage() {
                   <LockIcon />
                   <input
                     id="password"
-                    type="password"
+                    type={isPasswordVisible ? 'text' : 'password'}
+                    value={password}
+                    onChange={(event: ChangeEvent<HTMLInputElement>) => setPassword(event.target.value)}
                     placeholder="........"
+                    autoComplete="current-password"
                     className="w-full bg-transparent text-[1rem] text-[#2d1852] outline-none placeholder:text-[#ab99c6]"
                   />
-                  <button type="button" className="transition hover:text-[#6d38de]">
+                  <button
+                    type="button"
+                    onClick={() => setIsPasswordVisible((currentValue) => !currentValue)}
+                    aria-label={isPasswordVisible ? 'Hide password' : 'Show password'}
+                    className="transition hover:text-[#6d38de]"
+                  >
                     <EyeIcon />
                   </button>
                 </div>
               </div>
+
+              {errorMessage ? (
+                <p className="rounded-[16px] border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700" aria-live="polite">
+                  {errorMessage}
+                </p>
+              ) : null}
+
+              {successMessage ? (
+                <p className="rounded-[16px] border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700" aria-live="polite">
+                  {successMessage}
+                </p>
+              ) : null}
 
               <div className="flex flex-col gap-4 text-[0.98rem] text-[#5c467f] sm:flex-row sm:items-center sm:justify-between">
                 <label htmlFor="remember" className="flex items-center gap-3">
@@ -229,16 +350,17 @@ export default function LoginPage() {
                   />
                   <span>Remember for 30 days</span>
                 </label>
-                <Link href="#" className="font-semibold text-[#5a2ce4] transition hover:opacity-80">
+                <Link href="/forgot-password" className="font-semibold text-[#5a2ce4] transition hover:opacity-80">
                   Forgot password?
                 </Link>
               </div>
 
               <button
                 type="submit"
+                disabled={isSubmitting}
                 className="flex w-full items-center justify-center gap-3 rounded-[16px] bg-[linear-gradient(90deg,#6d38de_0%,#9b78f6_100%)] px-6 py-4 text-[1.05rem] font-semibold text-white shadow-[0_24px_34px_-20px_rgba(109,56,222,0.65)] transition hover:translate-y-[-1px]"
               >
-                <span>Sign In</span>
+                <span>{isSubmitting ? 'Signing In...' : 'Sign In'}</span>
                 <ArrowIcon />
               </button>
 

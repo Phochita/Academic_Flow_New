@@ -17,8 +17,27 @@ type AuthLikeUser = {
 type SyncProfileInput = {
   id: string;
   email?: string | null;
+  firstName?: string | null;
   fullName?: string | null;
+  lastName?: string | null;
   role?: AppRole;
+};
+
+type UpdateProfileInput = {
+  academicBio?: string | null;
+  address?: string | null;
+  avatarUrl?: string | null;
+  batch?: string | null;
+  classYear?: number | null;
+  currentGpa?: number | null;
+  department?: string | null;
+  earnedCredits?: number | null;
+  firstName?: string | null;
+  fullName?: string | null;
+  lastName?: string | null;
+  lastSeenAt?: Date | null;
+  phoneNumber?: string | null;
+  status?: "active" | "pending_review" | "suspended" | null;
 };
 
 const VALID_ROLES = new Set<AppRole>(["student", "lecturer", "admin"]);
@@ -51,12 +70,14 @@ const getProfileById = async (userId: string) => {
   return profile ?? null;
 };
 
-const syncProfile = async ({ id, email, fullName, role }: SyncProfileInput) => {
+const syncProfile = async ({ id, email, firstName, fullName, lastName, role }: SyncProfileInput) => {
   const existingProfile = await getProfileById(id);
 
   const nextRole = role ?? normalizeRole(existingProfile?.role);
   const nextEmail = email ?? existingProfile?.email ?? null;
+  const nextFirstName = firstName ?? existingProfile?.firstName ?? null;
   const nextFullName = fullName ?? existingProfile?.fullName ?? null;
+  const nextLastName = lastName ?? existingProfile?.lastName ?? null;
 
   if (!existingProfile) {
     const [createdProfile] = await db
@@ -64,7 +85,9 @@ const syncProfile = async ({ id, email, fullName, role }: SyncProfileInput) => {
       .values({
         id,
         email: nextEmail,
+        firstName: nextFirstName,
         fullName: nextFullName,
+        lastName: nextLastName,
         role: nextRole,
       })
       .returning();
@@ -74,7 +97,9 @@ const syncProfile = async ({ id, email, fullName, role }: SyncProfileInput) => {
 
   const shouldUpdate =
     existingProfile.email !== nextEmail ||
+    existingProfile.firstName !== nextFirstName ||
     existingProfile.fullName !== nextFullName ||
+    existingProfile.lastName !== nextLastName ||
     normalizeRole(existingProfile.role) !== nextRole;
 
   if (!shouldUpdate) {
@@ -85,7 +110,9 @@ const syncProfile = async ({ id, email, fullName, role }: SyncProfileInput) => {
     .update(profiles)
     .set({
       email: nextEmail,
+      firstName: nextFirstName,
       fullName: nextFullName,
+      lastName: nextLastName,
       role: nextRole,
     })
     .where(eq(profiles.id, id))
@@ -102,13 +129,45 @@ const syncProfileFromAuthUser = async (user: AuthLikeUser) => {
       typeof userMetadata.first_name === "string" ? userMetadata.first_name : null,
       typeof userMetadata.last_name === "string" ? userMetadata.last_name : null,
     ]);
+  const firstName = typeof userMetadata.first_name === "string" ? userMetadata.first_name : null;
+  const lastName = typeof userMetadata.last_name === "string" ? userMetadata.last_name : null;
 
   return syncProfile({
     id: user.id,
     email: user.email ?? null,
+    firstName,
     fullName,
+    lastName,
     role: normalizeRole(userMetadata.role),
   });
+};
+
+const updateProfileById = async (userId: string, updates: UpdateProfileInput) => {
+  const existingProfile = await getProfileById(userId);
+
+  if (!existingProfile) {
+    return null;
+  }
+
+  const nextValues: UpdateProfileInput = {};
+
+  for (const [key, value] of Object.entries(updates)) {
+    if (value !== undefined) {
+      Object.assign(nextValues, { [key]: value });
+    }
+  }
+
+  if (Object.keys(nextValues).length === 0) {
+    return existingProfile;
+  }
+
+  const [updatedProfile] = await db
+    .update(profiles)
+    .set(nextValues)
+    .where(eq(profiles.id, userId))
+    .returning();
+
+  return updatedProfile ?? existingProfile;
 };
 
 export = {
@@ -117,4 +176,5 @@ export = {
   normalizeRole,
   syncProfile,
   syncProfileFromAuthUser,
+  updateProfileById,
 };

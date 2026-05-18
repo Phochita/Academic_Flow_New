@@ -1,13 +1,31 @@
-type PricingPlan = {
-  name: string;
-  badge: string;
-  price: string;
-  billingLabel: string;
-  duration: string;
-  renewal: string;
-  featured?: boolean;
-  cta: string;
+'use client';
+
+import { useEffect, useMemo, useState } from 'react';
+import { buildAuthHeaders, getApiBaseUrl, readAuthSession } from '@/lib/auth';
+
+type SubscriptionPlan = {
+  code: string;
+  durationDays: number;
   features: string[];
+  name: string;
+  priceUsd: number;
+};
+
+type SubscriptionHistoryItem = {
+  createdAt: string;
+  endDate: string;
+  id: number;
+  plan: string | null;
+  startDate: string;
+  status: 'active' | 'expired' | 'cancelled' | string;
+};
+
+type SubscriptionPayload = {
+  activeSubscription: SubscriptionHistoryItem | null;
+  history: SubscriptionHistoryItem[];
+  isPro: boolean;
+  plans: SubscriptionPlan[];
+  userId: string;
 };
 
 type StatusRule = {
@@ -15,58 +33,78 @@ type StatusRule = {
   description: string;
 };
 
-const pricingPlans: PricingPlan[] = [
-  {
-    name: 'Monthly Plan',
-    badge: '30 Days Access',
-    price: '$5',
-    billingLabel: 'per month',
-    duration: '30 days',
-    renewal: 'Renews every 30 days',
-    cta: 'Choose Monthly Plan',
-    features: ['AI-based Study Planner', 'Learning Analytics', 'Smart Reminders'],
-  },
-  {
-    name: 'Semester Plan',
-    badge: 'Most Popular',
-    price: '$20',
-    billingLabel: 'per semester',
-    duration: '6 months',
-    renewal: 'Renews every 6 months',
-    featured: true,
-    cta: 'Choose Semester Plan',
-    features: ['AI-based Study Planner', 'Learning Analytics', 'Smart Reminders', 'Advanced Analytics'],
-  },
-  {
-    name: 'Annual Plan',
-    badge: 'Best Value',
-    price: '$35',
-    billingLabel: 'per year',
-    duration: '12 months',
-    renewal: 'Renews every 12 months',
-    cta: 'Choose Annual Plan',
-    features: ['AI-based Study Planner', 'Learning Analytics', 'Smart Reminders', 'Advanced Analytics', 'Priority Support'],
-  },
-];
-
 const statusRules: StatusRule[] = [
   {
     title: 'Automatic subscription status check',
-    description: 'The system shall automatically check subscription status so students always see the correct access level.',
+    description: 'The system checks subscription status automatically so dashboard access stays accurate.',
   },
   {
-    title: 'Revert to Free Student',
-    description: 'When a subscription expires, the user account shall revert to Free Student automatically.',
+    title: 'Revert to free access',
+    description: 'When a subscription expires, the account falls back to the standard access level automatically.',
   },
   {
-    title: 'Disable Student Pro features',
-    description: 'When a subscription expires, Student Pro features shall be disabled until the plan is renewed.',
+    title: 'Disable Pro-only tools',
+    description: 'Pro features remain locked until the user activates another eligible plan.',
   },
   {
-    title: 'Notify the user to renew',
-    description: 'The system shall notify the user to renew the subscription when access has expired or is about to expire.',
+    title: 'Prompt to renew',
+    description: 'Users can see the next renewal state and activate a new plan directly from this page.',
   },
 ];
+
+const formatCurrency = (value: number) =>
+  new Intl.NumberFormat('en-US', {
+    currency: 'USD',
+    style: 'currency',
+  }).format(value);
+
+const formatDuration = (days: number) => {
+  if (days >= 365) {
+    return '12 months';
+  }
+
+  if (days >= 180) {
+    return '6 months';
+  }
+
+  return `${days} days`;
+};
+
+const formatBillingLabel = (days: number) => {
+  if (days >= 365) {
+    return 'per year';
+  }
+
+  if (days >= 180) {
+    return 'per semester';
+  }
+
+  return 'per month';
+};
+
+const formatRenewalLabel = (days: number) => {
+  if (days >= 365) {
+    return 'Renews every 12 months';
+  }
+
+  if (days >= 180) {
+    return 'Renews every 6 months';
+  }
+
+  return `Renews every ${days} days`;
+};
+
+const formatPlanBadge = (plan: SubscriptionPlan) => {
+  if (plan.code === 'semester') {
+    return 'Most Popular';
+  }
+
+  if (plan.code === 'annual') {
+    return 'Best Value';
+  }
+
+  return `${plan.durationDays} Days Access`;
+};
 
 function PlanIcon() {
   return (
@@ -98,6 +136,103 @@ function StatusIcon() {
 }
 
 export default function SubscriptionPage() {
+  const apiBaseUrl = useMemo(() => getApiBaseUrl(), []);
+  const [subscriptionData, setSubscriptionData] = useState<SubscriptionPayload | null>(null);
+  const [errorMessage, setErrorMessage] = useState('');
+  const [isLoading, setIsLoading] = useState(true);
+  const [submittingPlan, setSubmittingPlan] = useState<string | null>(null);
+
+  useEffect(() => {
+    let ignore = false;
+
+    const loadSubscriptions = async () => {
+      const session = readAuthSession();
+
+      if (!session) {
+        if (!ignore) {
+          setErrorMessage('Sign in again to load your subscription details.');
+          setIsLoading(false);
+        }
+        return;
+      }
+
+      try {
+        const response = await fetch(`${apiBaseUrl}/api/subscriptions`, {
+          headers: buildAuthHeaders(session.accessToken),
+          method: 'GET',
+        });
+
+        const payload = (await response.json().catch(() => null)) as
+          | (SubscriptionPayload & { error?: string })
+          | null;
+
+        if (!response.ok || !payload) {
+          throw new Error(payload?.error?.trim() || 'Unable to load subscription details right now.');
+        }
+
+        if (!ignore) {
+          setSubscriptionData(payload);
+          setErrorMessage('');
+        }
+      } catch (error) {
+        if (!ignore) {
+          setErrorMessage(error instanceof Error ? error.message : 'Unable to load subscription details right now.');
+        }
+      } finally {
+        if (!ignore) {
+          setIsLoading(false);
+        }
+      }
+    };
+
+    void loadSubscriptions();
+
+    return () => {
+      ignore = true;
+    };
+  }, [apiBaseUrl]);
+
+  const handleActivatePlan = async (planCode: string) => {
+    const session = readAuthSession();
+
+    if (!session) {
+      setErrorMessage('Sign in again to activate a plan.');
+      return;
+    }
+
+    setSubmittingPlan(planCode);
+    setErrorMessage('');
+
+    try {
+      const response = await fetch(`${apiBaseUrl}/api/subscriptions`, {
+        method: 'POST',
+        headers: buildAuthHeaders(session.accessToken),
+        body: JSON.stringify({
+          plan: planCode,
+        }),
+      });
+
+      const payload = (await response.json().catch(() => null)) as
+        | (SubscriptionPayload & { error?: string })
+        | null;
+
+      if (!response.ok || !payload) {
+        throw new Error(payload?.error?.trim() || 'Unable to activate this plan right now.');
+      }
+
+      setSubscriptionData(payload);
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : 'Unable to activate this plan right now.');
+    } finally {
+      setSubmittingPlan(null);
+    }
+  };
+
+  const plans = subscriptionData?.plans ?? [];
+  const activeSubscription = subscriptionData?.activeSubscription ?? null;
+  const activePlan = plans.find((plan) => plan.code === activeSubscription?.plan) ?? null;
+  const latestHistory = subscriptionData?.history?.[0] ?? null;
+
   return (
     <div className="mx-auto max-w-[1180px] space-y-6">
       <section className="overflow-hidden rounded-[30px] border border-[#eadcf7] bg-white shadow-[0_30px_46px_-40px_rgba(95,41,210,0.7)]">
@@ -112,14 +247,15 @@ export default function SubscriptionPage() {
               Display
             </h1>
             <p className="mt-4 max-w-[680px] text-[0.98rem] leading-7 text-[#6b5a88]">
-              The system shall display available Student Pro subscription plans to students. Each plan below shows the
-              subscription price, subscription duration, premium features included, and renewal option.
+              This page now reads live plan data from the backend and lets signed-in users activate a subscription directly.
             </p>
 
             <div className="mt-8 grid gap-4 sm:grid-cols-3">
               <div className="rounded-[22px] border border-[#eadcf7] bg-[#fcf9ff] p-5">
                 <p className="text-[0.78rem] font-semibold uppercase tracking-[0.18em] text-[#7c6d92]">Current Account</p>
-                <p className="mt-2 text-[1.18rem] font-semibold text-[#2a1842]">Free Student</p>
+                <p className="mt-2 text-[1.18rem] font-semibold text-[#2a1842]">
+                  {activePlan ? activePlan.name : subscriptionData?.isPro ? 'Pro Access' : 'Free Student'}
+                </p>
               </div>
               <div className="rounded-[22px] border border-[#eadcf7] bg-[#fcf9ff] p-5">
                 <p className="text-[0.78rem] font-semibold uppercase tracking-[0.18em] text-[#7c6d92]">Status Check</p>
@@ -127,9 +263,15 @@ export default function SubscriptionPage() {
               </div>
               <div className="rounded-[22px] border border-[#eadcf7] bg-[#fcf9ff] p-5">
                 <p className="text-[0.78rem] font-semibold uppercase tracking-[0.18em] text-[#7c6d92]">Renewal Notice</p>
-                <p className="mt-2 text-[1.18rem] font-semibold text-[#2a1842]">Enabled</p>
+                <p className="mt-2 text-[1.18rem] font-semibold text-[#2a1842]">
+                  {activeSubscription ? new Date(activeSubscription.endDate).toLocaleDateString('en-US') : 'No active plan'}
+                </p>
               </div>
             </div>
+
+            {errorMessage ? (
+              <p className="mt-6 rounded-[18px] border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{errorMessage}</p>
+            ) : null}
           </div>
 
           <div className="relative rounded-[28px] bg-[linear-gradient(180deg,#6d38de_0%,#6c34df_42%,#5b28d3_100%)] p-7 text-white shadow-[0_30px_48px_-34px_rgba(95,41,210,0.95)]">
@@ -140,15 +282,15 @@ export default function SubscriptionPage() {
               </div>
               <h2 className="mt-6 text-[1.65rem] font-bold tracking-[-0.04em]">Subscription Status Rule</h2>
               <p className="mt-3 text-[0.94rem] leading-7 text-white/80">
-                If a Student Pro subscription expires, the account returns to Free Student, premium access is disabled,
-                and the student is notified to renew.
+                If a Student Pro subscription expires, the account returns to free access, premium tools are disabled,
+                and the user can activate a new plan.
               </p>
               <div className="mt-6 rounded-[22px] border border-white/15 bg-white/10 p-5">
-                <p className="text-sm font-semibold uppercase tracking-[0.18em] text-white/75">Expiry Handling</p>
+                <p className="text-sm font-semibold uppercase tracking-[0.18em] text-white/75">Current State</p>
                 <ul className="mt-4 space-y-3 text-sm leading-7 text-white">
-                  <li>Revert account to Free Student</li>
-                  <li>Disable Student Pro features</li>
-                  <li>Notify the user to renew</li>
+                  <li>{subscriptionData?.isPro ? 'Pro features are active' : 'Standard access is active'}</li>
+                  <li>{activeSubscription ? `Plan code: ${activeSubscription.plan}` : 'No active subscription on file'}</li>
+                  <li>{latestHistory ? `Latest status: ${latestHistory.status}` : 'No subscription history yet'}</li>
                 </ul>
               </div>
             </div>
@@ -159,68 +301,81 @@ export default function SubscriptionPage() {
       <section className="space-y-4 text-center">
         <h2 className="text-[2.2rem] font-bold tracking-[-0.04em] text-[#2a1842]">Available Student Pro Plans</h2>
         <p className="text-[1rem] text-[#6b5a88]">
-          Example subscription plans include Monthly Plan, Semester Plan, and Annual Plan.
+          Live plans are loaded from the backend plan catalog instead of hardcoded UI content.
         </p>
 
-        <div className="grid gap-5 pt-5 xl:grid-cols-3">
-          {pricingPlans.map((plan) => (
-            <article
-              key={plan.name}
-              className={`relative rounded-[28px] border bg-white px-7 py-7 text-left shadow-[0_28px_46px_-40px_rgba(95,41,210,0.7)] ${
-                plan.featured ? 'border-[#6d38de] shadow-[0_34px_54px_-38px_rgba(109,56,222,0.95)]' : 'border-[#eadcf7]'
-              }`}
-            >
-              <span
-                className={`inline-flex rounded-full px-3 py-1.5 text-[0.72rem] font-semibold uppercase tracking-[0.16em] ${
-                  plan.featured ? 'bg-[#6d38de] text-white' : 'bg-[#efe3ff] text-[#6d38de]'
-                }`}
-              >
-                {plan.badge}
-              </span>
+        {isLoading ? (
+          <div className="rounded-[28px] border border-[#eadcf7] bg-white px-7 py-10 text-sm font-semibold text-[#6d38de] shadow-[0_28px_46px_-40px_rgba(95,41,210,0.7)]">
+            Loading subscription plans...
+          </div>
+        ) : (
+          <div className="grid gap-5 pt-5 xl:grid-cols-3">
+            {plans.map((plan) => {
+              const isFeatured = plan.code === 'semester';
+              const isCurrentPlan = activeSubscription?.plan === plan.code && activeSubscription.status === 'active';
 
-              <h3 className="mt-5 text-[1.7rem] font-bold tracking-[-0.04em] text-[#2a1842]">{plan.name}</h3>
+              return (
+                <article
+                  key={plan.code}
+                  className={`relative rounded-[28px] border bg-white px-7 py-7 text-left shadow-[0_28px_46px_-40px_rgba(95,41,210,0.7)] ${
+                    isFeatured ? 'border-[#6d38de] shadow-[0_34px_54px_-38px_rgba(109,56,222,0.95)]' : 'border-[#eadcf7]'
+                  }`}
+                >
+                  <span
+                    className={`inline-flex rounded-full px-3 py-1.5 text-[0.72rem] font-semibold uppercase tracking-[0.16em] ${
+                      isFeatured ? 'bg-[#6d38de] text-white' : 'bg-[#efe3ff] text-[#6d38de]'
+                    }`}
+                  >
+                    {isCurrentPlan ? 'Current Plan' : formatPlanBadge(plan)}
+                  </span>
 
-              <div className="mt-5 flex items-end gap-2">
-                <span className="text-[2.8rem] font-bold tracking-[-0.05em] text-[#2a1842]">{plan.price}</span>
-                <span className="pb-2 text-[1rem] text-[#6b5a88]">{plan.billingLabel}</span>
-              </div>
+                  <h3 className="mt-5 text-[1.7rem] font-bold tracking-[-0.04em] text-[#2a1842]">{plan.name}</h3>
 
-              <div className="mt-6 space-y-4 rounded-[22px] bg-[#faf6ff] p-5">
-                <div className="flex items-start justify-between gap-4">
-                  <span className="text-sm font-semibold uppercase tracking-[0.16em] text-[#7c6d92]">Duration</span>
-                  <span className="text-right text-[1rem] font-medium text-[#2a1842]">{plan.duration}</span>
-                </div>
-                <div className="flex items-start justify-between gap-4">
-                  <span className="text-sm font-semibold uppercase tracking-[0.16em] text-[#7c6d92]">Renewal Option</span>
-                  <span className="text-right text-[1rem] font-medium text-[#2a1842]">{plan.renewal}</span>
-                </div>
-              </div>
+                  <div className="mt-5 flex items-end gap-2">
+                    <span className="text-[2.8rem] font-bold tracking-[-0.05em] text-[#2a1842]">{formatCurrency(plan.priceUsd)}</span>
+                    <span className="pb-2 text-[1rem] text-[#6b5a88]">{formatBillingLabel(plan.durationDays)}</span>
+                  </div>
 
-              <div className="mt-6">
-                <p className="text-sm font-semibold uppercase tracking-[0.16em] text-[#7c6d92]">Premium Features Included</p>
-                <div className="mt-4 space-y-4">
-                  {plan.features.map((feature) => (
-                    <div key={`${plan.name}-${feature}`} className="flex items-center gap-3">
-                      <CheckIcon />
-                      <span className="text-[1rem] text-[#2a1842]">{feature}</span>
+                  <div className="mt-6 space-y-4 rounded-[22px] bg-[#faf6ff] p-5">
+                    <div className="flex items-start justify-between gap-4">
+                      <span className="text-sm font-semibold uppercase tracking-[0.16em] text-[#7c6d92]">Duration</span>
+                      <span className="text-right text-[1rem] font-medium text-[#2a1842]">{formatDuration(plan.durationDays)}</span>
                     </div>
-                  ))}
-                </div>
-              </div>
+                    <div className="flex items-start justify-between gap-4">
+                      <span className="text-sm font-semibold uppercase tracking-[0.16em] text-[#7c6d92]">Renewal Option</span>
+                      <span className="text-right text-[1rem] font-medium text-[#2a1842]">{formatRenewalLabel(plan.durationDays)}</span>
+                    </div>
+                  </div>
 
-              <button
-                type="button"
-                className={`mt-10 w-full rounded-[16px] px-5 py-4 text-[1.02rem] font-semibold transition hover:translate-y-[-1px] ${
-                  plan.featured
-                    ? 'bg-[linear-gradient(135deg,#6d38de_0%,#8d66ef_100%)] text-white shadow-[0_24px_30px_-24px_rgba(109,56,222,0.95)]'
-                    : 'bg-[#f2dfff] text-[#5d34df]'
-                }`}
-              >
-                {plan.cta}
-              </button>
-            </article>
-          ))}
-        </div>
+                  <div className="mt-6">
+                    <p className="text-sm font-semibold uppercase tracking-[0.16em] text-[#7c6d92]">Premium Features Included</p>
+                    <div className="mt-4 space-y-4">
+                      {plan.features.map((feature) => (
+                        <div key={`${plan.code}-${feature}`} className="flex items-center gap-3">
+                          <CheckIcon />
+                          <span className="text-[1rem] text-[#2a1842]">{feature}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => handleActivatePlan(plan.code)}
+                    disabled={Boolean(submittingPlan)}
+                    className={`mt-10 w-full rounded-[16px] px-5 py-4 text-[1.02rem] font-semibold transition hover:translate-y-[-1px] disabled:cursor-not-allowed disabled:opacity-70 ${
+                      isFeatured
+                        ? 'bg-[linear-gradient(135deg,#6d38de_0%,#8d66ef_100%)] text-white shadow-[0_24px_30px_-24px_rgba(109,56,222,0.95)]'
+                        : 'bg-[#f2dfff] text-[#5d34df]'
+                    }`}
+                  >
+                    {submittingPlan === plan.code ? 'Activating plan...' : isCurrentPlan ? 'Current Active Plan' : `Choose ${plan.name}`}
+                  </button>
+                </article>
+              );
+            })}
+          </div>
+        )}
       </section>
 
       <div className="grid gap-6 xl:grid-cols-[minmax(0,1.2fr)_340px]">
@@ -252,23 +407,23 @@ export default function SubscriptionPage() {
             <div className="rounded-[20px] border border-[#efe3fb] bg-[#fffdfd] p-5">
               <p className="text-sm font-semibold uppercase tracking-[0.16em] text-[#7c6d92]">Displayed Information</p>
               <p className="mt-3 text-[0.98rem] leading-7 text-[#6b5a88]">
-                Subscription price, subscription duration, premium features included, and renewal options are shown for
-                every available Student Pro plan.
+                Prices, durations, premium features, and renewal timing are now loaded from the backend plan catalog.
               </p>
             </div>
 
             <div className="rounded-[20px] border border-[#efe3fb] bg-[#fffdfd] p-5">
               <p className="text-sm font-semibold uppercase tracking-[0.16em] text-[#7c6d92]">Expiry Outcome</p>
               <p className="mt-3 text-[0.98rem] leading-7 text-[#6b5a88]">
-                Expired subscriptions automatically fall back to Free Student and trigger a renewal notification for the
-                user.
+                Expired subscriptions automatically transition out of active status when the backend refresh runs.
               </p>
             </div>
 
             <div className="rounded-[20px] border border-[#efe3fb] bg-[#fffdfd] p-5">
-              <p className="text-sm font-semibold uppercase tracking-[0.16em] text-[#7c6d92]">Renewal Guidance</p>
+              <p className="text-sm font-semibold uppercase tracking-[0.16em] text-[#7c6d92]">Latest Backend State</p>
               <p className="mt-3 text-[0.98rem] leading-7 text-[#6b5a88]">
-                Students can renew using the same Monthly, Semester, or Annual plan options displayed on this page.
+                {latestHistory
+                  ? `Latest record: ${latestHistory.plan ?? 'unknown'} (${latestHistory.status}) ending ${new Date(latestHistory.endDate).toLocaleDateString('en-US')}.`
+                  : 'No subscription history has been created for this account yet.'}
               </p>
             </div>
           </div>

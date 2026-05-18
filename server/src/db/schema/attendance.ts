@@ -6,7 +6,7 @@ const { courses } = coursesSchema;
 const { profiles } = profilesSchema;
 const { bigint, bigserial, date, index, pgEnum, pgTable, timestamp, uniqueIndex, uuid } = pgCore;
 
-const attendanceStatusEnum = pgEnum("attendance_status", ["present", "absent"]);
+const attendanceStatusEnum = pgEnum("attendance_status", ["present", "absent", "late"]);
 
 const attendance = pgTable(
   "attendance",
@@ -16,6 +16,7 @@ const attendance = pgTable(
     studentId: uuid("student_id").references(() => profiles.id, { onDelete: "cascade" }),
     attendanceDate: date("date", { mode: "string" }).notNull(),
     status: attendanceStatusEnum("status"),
+    note: pgCore.text("note"),
     markedBy: uuid("marked_by").references(() => profiles.id),
     markedAt: timestamp("marked_at", { withTimezone: true, mode: "date" }).defaultNow(),
   },

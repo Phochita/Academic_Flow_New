@@ -25,10 +25,13 @@ const courseIdParamsSchema = z.object({
 });
 
 const createCourseSchema = z.object({
-  code: z.string().trim().min(3).max(20),
+  code: z.string().trim().min(3).max(20).optional(),
   description: z.string().trim().max(1000).nullish(),
   lecturerId: z.string().uuid().nullish(),
   name: z.string().trim().min(3).max(140),
+  room: z.string().trim().max(120).nullish(),
+  section: z.string().trim().max(120).nullish(),
+  subject: z.string().trim().max(120).nullish(),
 });
 
 const updateCourseSchema = z
@@ -37,6 +40,9 @@ const updateCourseSchema = z
     description: z.string().trim().max(1000).nullable().optional(),
     lecturerId: z.string().uuid().nullable().optional(),
     name: z.string().trim().min(3).max(140).optional(),
+    room: z.string().trim().max(120).nullable().optional(),
+    section: z.string().trim().max(120).nullable().optional(),
+    subject: z.string().trim().max(120).nullable().optional(),
   })
   .refine((value) => Object.values(value).some((item) => item !== undefined), {
     message: "At least one field must be provided.",
@@ -81,7 +87,31 @@ const serializeCourse = (row: {
     : null,
   lecturerId: row.course.lecturerId,
   name: row.course.name,
+  room: row.course.room,
+  section: row.course.section,
+  subject: row.course.subject,
 });
+
+const slugifyCourseCodePart = (value: string) =>
+  value
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+
+const buildGeneratedCourseCode = (payload: {
+  name: string;
+  section?: string | null | undefined;
+  subject?: string | null | undefined;
+}) => {
+  const baseSource = [payload.subject, payload.section, payload.name].filter(Boolean).join(" ");
+  const normalizedBase = slugifyCourseCodePart(baseSource) || "COURSE";
+  const suffix = Date.now().toString().slice(-4);
+  const maxBaseLength = Math.max(3, 20 - suffix.length - 1);
+  const base = normalizedBase.slice(0, maxBaseLength).replace(/-+$/g, "") || "COURSE";
+
+  return `${base}-${suffix}`;
+};
 
 const serializeMaterial = (row: {
   material: typeof materials.$inferSelect;
@@ -238,7 +268,8 @@ const createCourse = async (req: expressTypes.Request, res: expressTypes.Respons
     }
   }
 
-  const [existingCourse] = await db.select({ id: courses.id }).from(courses).where(eq(courses.code, payload.code)).limit(1);
+  const courseCode = payload.code ?? buildGeneratedCourseCode(payload);
+  const [existingCourse] = await db.select({ id: courses.id }).from(courses).where(eq(courses.code, courseCode)).limit(1);
 
   if (existingCourse) {
     throw new HttpError(409, "A course with this code already exists.");
@@ -247,10 +278,13 @@ const createCourse = async (req: expressTypes.Request, res: expressTypes.Respons
   const [createdCourse] = await db
     .insert(courses)
     .values({
-      code: payload.code,
+      code: courseCode,
       description: payload.description ?? null,
       lecturerId,
       name: payload.name,
+      room: payload.room ?? null,
+      section: payload.section ?? null,
+      subject: payload.subject ?? null,
     })
     .returning();
 
@@ -303,6 +337,9 @@ const updateCourse = async (req: expressTypes.Request, res: expressTypes.Respons
       description: payload.description,
       lecturerId: payload.lecturerId,
       name: payload.name,
+      room: payload.room,
+      section: payload.section,
+      subject: payload.subject,
     })
     .where(eq(courses.id, courseId))
     .returning();

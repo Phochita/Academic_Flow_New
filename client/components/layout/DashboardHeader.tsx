@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { useId } from 'react';
 
 type DashboardHeaderProps = {
+  avatarUrl?: string | null;
   searchPlaceholder?: string;
   title?: string;
   subtitle?: string;
@@ -28,6 +29,7 @@ function DashboardHeaderBellIcon() {
 }
 
 export default function DashboardHeader({
+  avatarUrl = null,
   searchPlaceholder = 'Search resources...',
   title = 'Academic Flow',
   subtitle = 'View Your Progress',
@@ -76,9 +78,14 @@ export default function DashboardHeader({
           <Link
             href="/profile"
             aria-label="Open profile"
-            className="grid h-9 w-9 shrink-0 place-items-center rounded-full border-2 border-[#ff9d75] bg-[radial-gradient(circle_at_35%_28%,#fff2cf_0%,#f4dcb5_45%,#c79f74_100%)] text-[0.7rem] font-bold text-[#4a3427] shadow-[0_14px_24px_-20px_rgba(91,46,199,0.95)] transition hover:scale-105"
+            className="grid h-9 w-9 shrink-0 place-items-center overflow-hidden rounded-full border-2 border-[#ff9d75] bg-[radial-gradient(circle_at_35%_28%,#fff2cf_0%,#f4dcb5_45%,#c79f74_100%)] text-[0.7rem] font-bold text-[#4a3427] shadow-[0_14px_24px_-20px_rgba(91,46,199,0.95)] transition hover:scale-105"
           >
-            {initials}
+            {avatarUrl ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={avatarUrl} alt="Profile avatar" className="h-full w-full object-cover" />
+            ) : (
+              initials
+            )}
           </Link>
         </div>
       </div>

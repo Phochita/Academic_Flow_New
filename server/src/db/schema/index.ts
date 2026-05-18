@@ -1,21 +1,25 @@
 import drizzleOrm = require("drizzle-orm");
+import activityLogsSchema = require("./activityLogs");
 import assignmentsSchema = require("./assignments");
 import attendanceSchema = require("./attendance");
 import coursesSchema = require("./courses");
 import enrollmentsSchema = require("./enrollments");
 import materialsSchema = require("./materials");
 import profilesSchema = require("./profiles");
+import reportsSchema = require("./reports");
 import submissionsSchema = require("./submissions");
 import subscriptionsSchema = require("./subscriptions");
 
 const { relations } = drizzleOrm;
 
+const { activityLogs, activitySeverityEnum } = activityLogsSchema;
 const { assignments } = assignmentsSchema;
 const { attendance, attendanceStatusEnum } = attendanceSchema;
 const { courses } = coursesSchema;
 const { enrollments } = enrollmentsSchema;
 const { materials } = materialsSchema;
-const { profiles, profileRoleEnum } = profilesSchema;
+const { profiles, profileRoleEnum, profileStatusEnum } = profilesSchema;
+const { reports, reportCategoryEnum, reportStatusEnum } = reportsSchema;
 const { submissions } = submissionsSchema;
 const { subscriptions, subscriptionStatusEnum } = subscriptionsSchema;
 
@@ -27,6 +31,9 @@ const profilesRelations = relations(profiles, ({ many }) => ({
   markedAttendanceRecords: many(attendance, { relationName: "attendanceMarker" }),
   uploadedMaterials: many(materials),
   subscriptions: many(subscriptions),
+  activityLogs: many(activityLogs),
+  ownedReports: many(reports, { relationName: "reportOwner" }),
+  resolvedReports: many(reports, { relationName: "reportResolver" }),
 }));
 
 const coursesRelations = relations(courses, ({ many, one }) => ({
@@ -106,7 +113,30 @@ const subscriptionsRelations = relations(subscriptions, ({ one }) => ({
   }),
 }));
 
+const activityLogsRelations = relations(activityLogs, ({ one }) => ({
+  actor: one(profiles, {
+    fields: [activityLogs.actorId],
+    references: [profiles.id],
+  }),
+}));
+
+const reportsRelations = relations(reports, ({ one }) => ({
+  owner: one(profiles, {
+    fields: [reports.ownerId],
+    references: [profiles.id],
+    relationName: "reportOwner",
+  }),
+  resolver: one(profiles, {
+    fields: [reports.resolvedBy],
+    references: [profiles.id],
+    relationName: "reportResolver",
+  }),
+}));
+
 export = {
+  activityLogs,
+  activityLogsRelations,
+  activitySeverityEnum,
   assignments,
   assignmentsRelations,
   attendance,
@@ -119,8 +149,13 @@ export = {
   materials,
   materialsRelations,
   profileRoleEnum,
+  profileStatusEnum,
   profiles,
   profilesRelations,
+  reportCategoryEnum,
+  reports,
+  reportsRelations,
+  reportStatusEnum,
   submissions,
   submissionsRelations,
   subscriptions,

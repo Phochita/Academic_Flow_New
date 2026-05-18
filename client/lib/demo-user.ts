@@ -35,7 +35,13 @@ export const readDemoUser = (): DemoUser | null => {
   }
 };
 
-export const getDashboardPath = (role: DemoUserRole) => (role === 'student' ? '/student' : '/lecturer');
+export const getDashboardPath = (role: DemoUserRole) => {
+  if (role === 'admin') {
+    return '/admin';
+  }
+
+  return role === 'student' ? '/student' : '/lecturer';
+};
 
 export const getUserInitials = (fullName?: string | null, fallback = 'AF') => {
   const parts = (fullName ?? '')

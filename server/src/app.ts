@@ -4,6 +4,7 @@ import authRoutes = require("./routes/auth");
 import assignmentRoutes = require("./routes/assignments");
 import attendanceRoutes = require("./routes/attendance");
 import courseRoutes = require("./routes/courses");
+import profileRoutes = require("./routes/profile");
 import subscriptionRoutes = require("./routes/subscriptions");
 import aiRoutes = require("./routes/ai");
 import httpUtils = require("./utils/http");
@@ -12,13 +13,33 @@ const { HttpError, isHttpError, isZodError } = httpUtils;
 
 const app = express();
 
+const isJsonParseError = (error: unknown): error is { status?: number; type?: string } => {
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+
+  const candidate = error as { status?: number; type?: string };
+  return candidate.status === 400 && candidate.type === "entity.parse.failed";
+};
+
+const isDatabaseQueryError = (
+  error: unknown,
+): error is { cause?: { code?: string; message?: string }; message?: string; name?: string } => {
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+
+  const candidate = error as { message?: string; name?: string; query?: string };
+  return candidate.name === "DrizzleQueryError" || typeof candidate.query === "string";
+};
+
 app.use(
   cors({
     credentials: true,
     origin: true,
   }),
 );
-app.use(express.json({ limit: "1mb" }));
+app.use(express.json({ limit: "5mb" }));
 app.use(express.urlencoded({ extended: true }));
 
 app.get("/health", (_req, res) => {
@@ -30,6 +51,7 @@ app.get("/health", (_req, res) => {
 });
 
 app.use("/api/auth", authRoutes);
+app.use("/api/profile", profileRoutes);
 app.use("/api/courses", courseRoutes);
 app.use("/api/assignments", assignmentRoutes);
 app.use("/api/attendance", attendanceRoutes);
@@ -55,6 +77,33 @@ app.use((error: unknown, _req: express.Request, res: express.Response, _next: ex
     return res.status(error.statusCode).json({
       details: error.details ?? null,
       error: error.message,
+    });
+  }
+
+  if (isJsonParseError(error)) {
+    return res.status(400).json({
+      error: "Invalid JSON body.",
+    });
+  }
+
+  if (isDatabaseQueryError(error)) {
+    const causeCode = error.cause?.code?.trim().toUpperCase();
+    const causeMessage = error.cause?.message?.trim().toLowerCase() ?? "";
+
+    if (causeCode === "ENOTFOUND") {
+      return res.status(503).json({
+        error: "Database host could not be resolved. Check DATABASE_URL, DIRECT_URL, and DRIZZLE_DATABASE_URL in server/.env.",
+      });
+    }
+
+    if (causeCode === "42P01" || causeMessage.includes("does not exist")) {
+      return res.status(500).json({
+        error: "Database schema is incomplete. Run the latest Drizzle migrations for this Supabase database.",
+      });
+    }
+
+    return res.status(500).json({
+      error: "Database query failed. Check the current Supabase database connection and make sure migrations have been applied.",
     });
   }
 

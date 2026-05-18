@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import PublicRouteRedirect from '@/components/auth/PublicRouteRedirect';
 
 type FeatureCard = {
   title: string;
@@ -204,6 +205,7 @@ function HeroIllustration() {
 export default function LandingPage() {
   return (
     <div className="min-h-screen bg-[#f8f7ff] text-[#11172b]">
+      <PublicRouteRedirect />
       <header className="sticky top-0 z-50 border-b border-[#ebe7f7] bg-white/92 backdrop-blur">
         <nav className="mx-auto flex max-w-[1180px] items-center justify-between px-6 py-4">
           <Link href="/" className="flex items-center gap-3">
