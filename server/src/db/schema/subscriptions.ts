@@ -4,7 +4,7 @@ import profilesSchema = require("./profiles");
 const { profiles } = profilesSchema;
 const { bigserial, index, numeric, pgEnum, pgTable, text, timestamp, uuid } = pgCore;
 
-const subscriptionStatusEnum = pgEnum("subscription_status", ["active", "expired", "cancelled", "trial", "past_due"]);
+const subscriptionStatusEnum = pgEnum("subscription_status", ["active", "expired", "cancelled", "trial", "past_due", "pending"]);
 
 const subscriptions = pgTable(
   "subscriptions",

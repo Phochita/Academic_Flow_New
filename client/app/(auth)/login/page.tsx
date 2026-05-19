@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { ChangeEvent, FormEvent, useMemo, useState } from 'react';
 import PublicRouteRedirect from '@/components/auth/PublicRouteRedirect';
-import { buildSessionFromPayload, getApiBaseUrl, getDashboardPath, saveAuthSession } from '@/lib/auth';
+import { buildSessionFromPayload, getApiBaseUrl, getAuthRequestErrorMessage, getDashboardPath, saveAuthSession } from '@/lib/auth';
 
 function BrandIcon() {
   return (
@@ -157,7 +157,7 @@ export default function LoginPage() {
         }
       }, 150);
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unable to sign in right now.';
+      const message = getAuthRequestErrorMessage(error, 'Unable to sign in right now.', apiBaseUrl);
       setSuccessMessage('');
       setErrorMessage(message);
     } finally {

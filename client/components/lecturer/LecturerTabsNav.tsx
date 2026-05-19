@@ -7,6 +7,7 @@ const lecturerTabs = [
   { href: '/lecturer', label: 'Dashboard' },
   { href: '/lecturer/classwork', label: 'Classwork' },
   { href: '/lecturer/grades', label: 'Grades' },
+  { href: '/lecturer/attendance', label: 'Attendance' },
   { href: '/lecturer/analytics', label: 'Analytics' },
 ] as const;
 

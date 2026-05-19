@@ -129,6 +129,14 @@ const toAuthServiceError = (error: unknown) => {
   return error;
 };
 
+const throwIfAuthServiceUnavailable = (error: unknown) => {
+  const normalizedError = toAuthServiceError(error);
+
+  if (normalizedError !== error) {
+    throw normalizedError;
+  }
+};
+
 const register = async (req: expressTypes.Request, res: expressTypes.Response) => {
   const payload = registerSchema.parse(req.body);
   if (payload.role === "admin") {
@@ -161,8 +169,13 @@ const register = async (req: expressTypes.Request, res: expressTypes.Response) =
     throw toAuthServiceError(signupError);
   }
 
-  if (error || !data.user) {
-    throw new HttpError(400, error?.message ?? "Registration failed.");
+  if (error) {
+    throwIfAuthServiceUnavailable(error);
+    throw new HttpError(400, error.message ?? "Registration failed.");
+  }
+
+  if (!data.user) {
+    throw new HttpError(400, "Registration failed.");
   }
 
   await syncProfileFromAuthUser({
@@ -205,8 +218,13 @@ const login = async (req: expressTypes.Request, res: expressTypes.Response) => {
     throw toAuthServiceError(loginError);
   }
 
-  if (error || !data.user) {
-    throw new HttpError(401, error?.message ?? "Invalid email or password.");
+  if (error) {
+    throwIfAuthServiceUnavailable(error);
+    throw new HttpError(401, error.message ?? "Invalid email or password.");
+  }
+
+  if (!data.user) {
+    throw new HttpError(401, "Invalid email or password.");
   }
 
   await syncProfileFromAuthUser({
@@ -243,6 +261,7 @@ const forgotPassword = async (req: expressTypes.Request, res: expressTypes.Respo
   }
 
   if (error) {
+    throwIfAuthServiceUnavailable(error);
     throw new HttpError(400, error.message ?? "Unable to send a password reset email right now.");
   }
 
@@ -268,6 +287,7 @@ const resetPassword = async (req: expressTypes.Request, res: expressTypes.Respon
   }
 
   if (error) {
+    throwIfAuthServiceUnavailable(error);
     throw new HttpError(400, error.message ?? "Unable to update your password right now.");
   }
 

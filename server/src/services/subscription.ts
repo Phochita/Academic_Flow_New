@@ -32,6 +32,11 @@ const planCatalog = [
   },
 ] as const;
 
+type AbaPaySandboxSessionInput = {
+  planCode: string;
+  userId: string;
+};
+
 const getPlans = () => planCatalog.map((plan) => ({ ...plan }));
 
 const getPlanByCode = (planCode: string) =>
@@ -41,6 +46,32 @@ const calculateEndDate = (startDate: Date, durationDays: number) => {
   const endDate = new Date(startDate);
   endDate.setUTCDate(endDate.getUTCDate() + durationDays);
   return endDate;
+};
+
+const createAbaPaySandboxSession = ({ planCode, userId }: AbaPaySandboxSessionInput) => {
+  const selectedPlan = getPlanByCode(planCode);
+
+  if (!selectedPlan) {
+    throw new HttpError(400, "Unknown subscription plan.");
+  }
+
+  const merchantId = process.env.ABA_PAY_SANDBOX_MERCHANT_ID?.trim() || "ACAFLOW_SANDBOX";
+  const merchantName = process.env.ABA_PAY_SANDBOX_MERCHANT_NAME?.trim() || "AcaFlow Sandbox";
+  const provider = process.env.ABA_PAY_SANDBOX_PROVIDER?.trim() || "aba_pay_sandbox";
+  const reference = `AF-${selectedPlan.code.toUpperCase()}-${Date.now()}-${userId.slice(0, 8)}`;
+
+  return {
+    amountUsd: selectedPlan.priceUsd,
+    currency: "USD",
+    expiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
+    merchantId,
+    merchantName,
+    paymentMethod: "aba_pay_sandbox",
+    plan: selectedPlan,
+    provider,
+    reference,
+    status: "pending",
+  };
 };
 
 const getActiveSubscriptionInternal = async (userId: string) => {
@@ -59,6 +90,16 @@ const getUserSubscriptions = async (userId: string) => {
 
   return db.select().from(subscriptions).where(eq(subscriptions.userId, userId)).orderBy(desc(subscriptions.createdAt));
 };
+
+const getAdminSubscriptions = async () =>
+  db
+    .select({
+      profile: profiles,
+      subscription: subscriptions,
+    })
+    .from(subscriptions)
+    .leftJoin(profiles, eq(subscriptions.userId, profiles.id))
+    .orderBy(desc(subscriptions.createdAt));
 
 const getActiveSubscription = async (userId: string) => {
   await refreshExpiredSubscriptionsForUser(userId);
@@ -148,8 +189,109 @@ const activateSubscription = async (userId: string, planCode: string, startDate?
   };
 };
 
+const createPendingSubscriptionRequest = async ({
+  planCode,
+  providerTransactionId,
+  reference,
+  userId,
+}: {
+  planCode: string;
+  providerTransactionId: string;
+  reference: string;
+  userId: string;
+}) => {
+  const selectedPlan = getPlanByCode(planCode);
+
+  if (!selectedPlan) {
+    throw new HttpError(400, "Unknown subscription plan.");
+  }
+
+  await refreshExpiredSubscriptionsForUser(userId);
+
+  await db
+    .update(subscriptions)
+    .set({ status: "cancelled", statusReason: "Replaced by a newer pending payment request." })
+    .where(and(eq(subscriptions.userId, userId), eq(subscriptions.status, "pending")));
+
+  const requestedAt = new Date();
+  const provisionalEndDate = calculateEndDate(requestedAt, selectedPlan.durationDays);
+
+  const [createdSubscription] = await db
+    .insert(subscriptions)
+    .values({
+      billingCycle: selectedPlan.code,
+      mrrUsd: selectedPlan.priceUsd,
+      plan: selectedPlan.code,
+      startDate: requestedAt,
+      endDate: provisionalEndDate,
+      status: "pending",
+      statusReason: `Awaiting admin approval. ABA reference: ${reference}. Transaction: ${providerTransactionId}.`,
+      stripeSubscriptionId: reference,
+      userId,
+    })
+    .returning();
+
+  await syncUserProStatus(userId);
+
+  return {
+    plan: selectedPlan,
+    subscription: createdSubscription ?? null,
+  };
+};
+
+const approveSubscription = async (subscriptionId: number) => {
+  const [pendingSubscription] = await db
+    .select()
+    .from(subscriptions)
+    .where(and(eq(subscriptions.id, subscriptionId), eq(subscriptions.status, "pending")))
+    .limit(1);
+
+  if (!pendingSubscription?.userId || !pendingSubscription.plan) {
+    throw new HttpError(404, "Pending subscription request not found.");
+  }
+
+  const selectedPlan = getPlanByCode(pendingSubscription.plan);
+
+  if (!selectedPlan) {
+    throw new HttpError(400, "Unknown subscription plan.");
+  }
+
+  await refreshExpiredSubscriptionsForUser(pendingSubscription.userId);
+
+  await db
+    .update(subscriptions)
+    .set({ status: "cancelled", statusReason: "Cancelled by admin approval of a newer subscription." })
+    .where(and(eq(subscriptions.userId, pendingSubscription.userId), eq(subscriptions.status, "active")));
+
+  const approvedAt = new Date();
+  const endDate = calculateEndDate(approvedAt, selectedPlan.durationDays);
+
+  const [approvedSubscription] = await db
+    .update(subscriptions)
+    .set({
+      endDate,
+      startDate: approvedAt,
+      status: "active",
+      statusReason: "Approved by admin.",
+    })
+    .where(eq(subscriptions.id, subscriptionId))
+    .returning();
+
+  const proStatus = await syncUserProStatus(pendingSubscription.userId);
+
+  return {
+    plan: selectedPlan,
+    subscription: approvedSubscription ?? null,
+    ...proStatus,
+  };
+};
+
 export = {
+  approveSubscription,
   activateSubscription,
+  createAbaPaySandboxSession,
+  createPendingSubscriptionRequest,
+  getAdminSubscriptions,
   getActiveSubscription,
   getPlans,
   getUserSubscriptions,

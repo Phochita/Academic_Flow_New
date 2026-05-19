@@ -4,7 +4,7 @@ import plannerService = require("../services/gemini");
 import httpUtils = require("../utils/http");
 
 const { z } = zod;
-const { generateStudyPlan } = plannerService;
+const { generatePerformanceAnalysis, generateStudyPlan } = plannerService;
 const { HttpError } = httpUtils;
 
 const generateStudyPlanSchema = z.object({
@@ -25,6 +25,22 @@ const generateStudyPlanSchema = z.object({
   weeklyHours: z.number().int().min(1).max(40).optional(),
 });
 
+const performanceAnalysisSchema = z.object({
+  attendancePercentage: z.number().min(0).max(100),
+  courses: z
+    .array(
+      z.object({
+        attendancePercentage: z.number().min(0).max(100),
+        courseName: z.string().trim().min(1).max(160),
+        totalRecords: z.number().int().min(0).optional(),
+      }),
+    )
+    .max(20)
+    .optional(),
+  currentGpa: z.union([z.number().min(0).max(4), z.null()]).optional(),
+  earnedCredits: z.union([z.number().int().min(0).max(500), z.null()]).optional(),
+});
+
 const createStudyPlan = async (req: expressTypes.Request, res: expressTypes.Response) => {
   if (!req.auth) {
     throw new HttpError(401, "Authentication is required.");
@@ -39,4 +55,18 @@ const createStudyPlan = async (req: expressTypes.Request, res: expressTypes.Resp
   });
 };
 
-export = { createStudyPlan };
+const analyzePerformance = async (req: expressTypes.Request, res: expressTypes.Response) => {
+  if (!req.auth) {
+    throw new HttpError(401, "Authentication is required.");
+  }
+
+  const payload = performanceAnalysisSchema.parse(req.body);
+  const analysis = generatePerformanceAnalysis(payload);
+
+  res.status(200).json({
+    analysis,
+    requestedBy: req.auth.userId,
+  });
+};
+
+export = { analyzePerformance, createStudyPlan };

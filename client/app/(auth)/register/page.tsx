@@ -5,7 +5,13 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { ChangeEvent, FormEvent, useMemo, useState } from 'react';
 import PublicRouteRedirect from '@/components/auth/PublicRouteRedirect';
-import { buildSessionFromPayload, getApiBaseUrl, getDashboardPath, saveAuthSession } from '@/lib/auth';
+import {
+  buildSessionFromPayload,
+  getApiBaseUrl,
+  getAuthRequestErrorMessage,
+  getDashboardPath,
+  saveAuthSession,
+} from '@/lib/auth';
 
 type Role = 'student' | 'lecturer';
 
@@ -152,7 +158,7 @@ export default function RegisterPage() {
           `Account created. Check ${trimmedForm.email} for your confirmation email before signing in.`,
       );
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unable to create your account right now.';
+      const message = getAuthRequestErrorMessage(error, 'Unable to create your account right now.', apiBaseUrl);
       setSuccessMessage('');
       setErrorMessage(message);
     } finally {

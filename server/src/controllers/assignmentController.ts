@@ -6,7 +6,7 @@ import schema = require("../db/schema");
 import courseService = require("../services/course");
 import httpUtils = require("../utils/http");
 
-const { and, asc, desc, eq } = drizzleOrm;
+const { and, asc, desc, eq, inArray } = drizzleOrm;
 const { z } = zod;
 const { db } = dbModule;
 const { assignments, courses, enrollments, profiles, submissions } = schema;
@@ -56,6 +56,7 @@ const gradeSubmissionParamsSchema = z.object({
 });
 
 const gradeSubmissionSchema = z.object({
+  feedback: z.string().trim().max(2000).nullish(),
   grade: z.number().min(0).max(1000),
 });
 
@@ -76,9 +77,11 @@ const getAssignmentRecord = async (assignmentId: number) => {
     .select({
       assignment: assignments,
       course: courses,
+      lecturer: profiles,
     })
     .from(assignments)
     .innerJoin(courses, eq(assignments.courseId, courses.id))
+    .innerJoin(profiles, eq(courses.lecturerId, profiles.id))
     .where(eq(assignments.id, assignmentId))
     .limit(1);
 
@@ -88,10 +91,17 @@ const getAssignmentRecord = async (assignmentId: number) => {
 const serializeAssignment = (row: {
   assignment: typeof assignments.$inferSelect;
   course: typeof courses.$inferSelect;
-}) => ({
+  lecturer: typeof profiles.$inferSelect;
+}, submission?: typeof submissions.$inferSelect | null) => ({
   course: {
     code: row.course.code,
     id: row.course.id,
+    lecturer: {
+      email: row.lecturer.email,
+      fullName: row.lecturer.fullName,
+      id: row.lecturer.id,
+    },
+    lecturerId: row.course.lecturerId,
     name: row.course.name,
   },
   courseId: row.assignment.courseId,
@@ -100,6 +110,18 @@ const serializeAssignment = (row: {
   dueDate: row.assignment.dueDate,
   id: row.assignment.id,
   maxScore: row.assignment.maxScore,
+  submission: submission
+    ? {
+        feedback: submission.feedback,
+        fileUrl: submission.fileUrl,
+        grade: submission.grade,
+        gradedAt: submission.gradedAt,
+        id: submission.id,
+        status: submission.status,
+        submissionText: submission.submissionText,
+        submittedAt: submission.submittedAt,
+      }
+    : null,
   title: row.assignment.title,
 });
 
@@ -115,13 +137,16 @@ const listAssignments = async (req: expressTypes.Request, res: expressTypes.Resp
     .select({
       assignment: assignments,
       course: courses,
+      lecturer: profiles,
     })
     .from(assignments)
-    .innerJoin(courses, eq(assignments.courseId, courses.id));
+    .innerJoin(courses, eq(assignments.courseId, courses.id))
+    .innerJoin(profiles, eq(courses.lecturerId, profiles.id));
 
   if (req.auth.role === "student") {
     baseQuery = baseQuery.innerJoin(enrollments, eq(enrollments.courseId, courses.id));
     conditions.push(eq(enrollments.studentId, req.auth.userId));
+    conditions.push(eq(enrollments.status, "active"));
   } else if (req.auth.role === "lecturer") {
     conditions.push(eq(courses.lecturerId, req.auth.userId));
   }
@@ -135,8 +160,24 @@ const listAssignments = async (req: expressTypes.Request, res: expressTypes.Resp
     ? await baseQuery.where(whereClause).orderBy(asc(assignments.dueDate), desc(assignments.createdAt))
     : await baseQuery.orderBy(asc(assignments.dueDate), desc(assignments.createdAt));
 
+  const studentSubmissionByAssignmentId = new Map<number, typeof submissions.$inferSelect>();
+
+  if (req.auth.role === "student" && rows.length > 0) {
+    const assignmentIds = rows.map((row) => row.assignment.id);
+    const studentSubmissionRows = await db
+      .select()
+      .from(submissions)
+      .where(and(eq(submissions.studentId, req.auth.userId), inArray(submissions.assignmentId, assignmentIds)));
+
+    for (const submission of studentSubmissionRows) {
+      if (submission.assignmentId) {
+        studentSubmissionByAssignmentId.set(submission.assignmentId, submission);
+      }
+    }
+  }
+
   res.status(200).json({
-    assignments: rows.map(serializeAssignment),
+    assignments: rows.map((row) => serializeAssignment(row, studentSubmissionByAssignmentId.get(row.assignment.id) ?? null)),
   });
 };
 
@@ -150,15 +191,28 @@ const getAssignment = async (req: expressTypes.Request, res: expressTypes.Respon
 
   await ensureCourseAccess(assignmentRecord.course.id, req.auth);
 
+  const [studentSubmission] =
+    req.auth?.role === "student"
+      ? await db
+          .select()
+          .from(submissions)
+          .where(and(eq(submissions.assignmentId, assignmentId), eq(submissions.studentId, req.auth.userId)))
+          .limit(1)
+      : [];
+
   res.status(200).json({
-    assignment: serializeAssignment(assignmentRecord),
+    assignment: serializeAssignment(assignmentRecord, studentSubmission ?? null),
   });
 };
 
 const createAssignment = async (req: expressTypes.Request, res: expressTypes.Response) => {
   const payload = createAssignmentSchema.parse(req.body);
 
-  await ensureCourseAccess(payload.courseId, req.auth, { requireManager: true });
+  const courseRecord = await ensureCourseAccess(payload.courseId, req.auth, { requireManager: true });
+
+  if (!courseRecord.course.lecturerId) {
+    throw new HttpError(400, "Assign a lecturer to this course before creating assignments.");
+  }
 
   const [createdAssignment] = await db
     .insert(assignments)
@@ -318,6 +372,7 @@ const gradeSubmission = async (req: expressTypes.Request, res: expressTypes.Resp
   const [gradedSubmission] = await db
     .update(submissions)
     .set({
+      feedback: payload.feedback ?? undefined,
       grade: payload.grade,
       gradedAt: new Date(),
     })

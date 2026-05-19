@@ -1,9 +1,10 @@
 'use client';
 
-import React, { Suspense } from 'react';
+import React, { Suspense, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
-import { useStoredAuthUser } from '@/lib/auth';
+import { buildAuthHeaders, getApiBaseUrl, readAuthSession, updateStoredAuthUser, useStoredAuthUser } from '@/lib/auth';
+import { fetchMyProfile, type UserProfile } from '@/lib/profile';
 
 const courses = [
   {
@@ -226,6 +227,7 @@ function LegacyStudentDashboard() {
 }
 
 type DashboardCourse = {
+  id?: number | null;
   title: string;
   instructor: string;
   progress: number;
@@ -233,6 +235,57 @@ type DashboardCourse = {
   headerTone: string;
   watermark: React.ReactNode;
   pattern: React.ReactNode;
+};
+
+type ApiCourse = {
+  code?: string | null;
+  id: number;
+  lecturer?: {
+    fullName?: string | null;
+  } | null;
+  name: string;
+  subject?: string | null;
+};
+
+type ApiAssignment = {
+  course?: {
+    name?: string | null;
+  } | null;
+  dueDate?: string | null;
+  id: number;
+  title: string;
+};
+
+type ApiAttendanceSummary = {
+  attendancePercentage: number;
+  courseId: number;
+};
+
+type ApiCourseInvitation = {
+  course: ApiCourse;
+  enrollmentId: number;
+  invitedAt?: string | null;
+  status: string;
+};
+
+type DashboardFocusCard = {
+  badge: string;
+  deadline: string;
+  title: string;
+  description: string;
+  action: string;
+  accent: string;
+  footer: string;
+};
+
+type StudentDashboardData = {
+  assignments: ApiAssignment[];
+  courses: ApiCourse[];
+  errorMessage: string;
+  invitations: ApiCourseInvitation[];
+  isLoading: boolean;
+  profile: UserProfile | null;
+  summary: ApiAttendanceSummary[];
 };
 
 const dashboardCourses: DashboardCourse[] = [
@@ -522,6 +575,169 @@ const overviewMetrics = [
   },
 ] as const;
 
+const formatDateLabel = (value?: string | null) => {
+  if (!value) {
+    return 'No due date';
+  }
+
+  return new Date(value).toLocaleDateString('en-US', {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+  });
+};
+
+const formatDeadlineLabel = (value?: string | null) => {
+  if (!value) {
+    return 'No due date';
+  }
+
+  const dueTime = new Date(value).getTime();
+  const now = Date.now();
+  const days = Math.ceil((dueTime - now) / (1000 * 60 * 60 * 24));
+
+  if (days < 0) {
+    return 'Past due';
+  }
+
+  if (days === 0) {
+    return 'Due today';
+  }
+
+  if (days === 1) {
+    return 'Due tomorrow';
+  }
+
+  return `Due in ${days} days`;
+};
+
+const buildLiveCourseCards = (courses: ApiCourse[], summary: ApiAttendanceSummary[]): DashboardCourse[] => {
+  const attendanceByCourseId = new Map(summary.map((item) => [item.courseId, item.attendancePercentage]));
+
+  return courses.map((course, index) => {
+    const visual = dashboardCourses[index % dashboardCourses.length];
+
+    return {
+      ...visual,
+      id: course.id,
+      title: course.name,
+      instructor: course.lecturer?.fullName?.trim() || 'Lecturer not assigned',
+      progress: attendanceByCourseId.get(course.id) ?? 0,
+    };
+  });
+};
+
+const buildLiveFocusCards = (assignments: ApiAssignment[]): DashboardFocusCard[] =>
+  assignments.slice(0, 3).map((assignment, index) => ({
+    badge: index === 0 ? 'High Priority' : formatDateLabel(assignment.dueDate),
+    deadline: formatDeadlineLabel(assignment.dueDate),
+    title: assignment.title,
+    description: assignment.course?.name ? `Course: ${assignment.course.name}` : 'Assignment from your enrolled course.',
+    action: 'Start Study Session',
+    accent: index % 3 === 0 ? 'border-l-[#6d38de]' : index % 3 === 1 ? 'border-l-[#4e53e4]' : 'border-l-[#b62d5a]',
+    footer: assignment.dueDate ? `Due ${formatDateLabel(assignment.dueDate)}` : 'No due date set',
+  }));
+
+const useStudentDashboardData = (): StudentDashboardData => {
+  const [data, setData] = useState<StudentDashboardData>({
+    assignments: [],
+    courses: [],
+    errorMessage: '',
+    invitations: [],
+    isLoading: true,
+    profile: null,
+    summary: [],
+  });
+
+  useEffect(() => {
+    let ignore = false;
+    const session = readAuthSession();
+
+    const loadDashboardData = async () => {
+      if (!session) {
+        if (!ignore) {
+          setData((currentData) => ({
+            ...currentData,
+            errorMessage: 'Sign in again to load your dashboard.',
+            isLoading: false,
+          }));
+        }
+        return;
+      }
+
+      try {
+        const headers = buildAuthHeaders(session.accessToken);
+        const [profile, coursesResponse, invitationsResponse, assignmentsResponse, attendanceResponse] = await Promise.all([
+          fetchMyProfile(session.accessToken),
+          fetch(`${getApiBaseUrl()}/api/courses`, { headers }),
+          fetch(`${getApiBaseUrl()}/api/courses/invitations`, { headers }),
+          fetch(`${getApiBaseUrl()}/api/assignments`, { headers }),
+          fetch(`${getApiBaseUrl()}/api/attendance/summary`, { headers }),
+        ]);
+
+        const [coursesPayload, invitationsPayload, assignmentsPayload, attendancePayload] = await Promise.all([
+          coursesResponse.json().catch(() => null) as Promise<{ courses?: ApiCourse[] } | null>,
+          invitationsResponse.json().catch(() => null) as Promise<{ invitations?: ApiCourseInvitation[] } | null>,
+          assignmentsResponse.json().catch(() => null) as Promise<{ assignments?: ApiAssignment[] } | null>,
+          attendanceResponse.json().catch(() => null) as Promise<{ summary?: ApiAttendanceSummary[] } | null>,
+        ]);
+
+        if (!coursesResponse.ok) {
+          throw new Error('Unable to load your courses right now.');
+        }
+
+        if (!assignmentsResponse.ok) {
+          throw new Error('Unable to load your assignments right now.');
+        }
+
+        if (!invitationsResponse.ok) {
+          throw new Error('Unable to load your class invitations right now.');
+        }
+
+        if (!attendanceResponse.ok) {
+          throw new Error('Unable to load your attendance summary right now.');
+        }
+
+        if (!ignore) {
+          setData({
+            assignments: assignmentsPayload?.assignments ?? [],
+            courses: coursesPayload?.courses ?? [],
+            errorMessage: '',
+            invitations: invitationsPayload?.invitations ?? [],
+            isLoading: false,
+            profile,
+            summary: attendancePayload?.summary ?? [],
+          });
+          updateStoredAuthUser({
+            avatarUrl: profile.avatarUrl,
+            email: profile.email,
+            fullName: profile.fullName,
+            id: profile.id,
+            isPro: profile.isPro,
+            role: profile.role,
+          });
+        }
+      } catch (error) {
+        if (!ignore) {
+          setData((currentData) => ({
+            ...currentData,
+            errorMessage: error instanceof Error ? error.message : 'Unable to load your dashboard right now.',
+            isLoading: false,
+          }));
+        }
+      }
+    };
+
+    void loadDashboardData();
+
+    return () => {
+      ignore = true;
+    };
+  }, []);
+
+  return data;
+};
+
 function DashboardUserIcon() {
   return (
     <svg viewBox="0 0 24 24" className="h-4 w-4 text-[#6d38de]" fill="currentColor" aria-hidden="true">
@@ -633,25 +849,125 @@ function StudentCourseCard({
   );
 }
 
-function OverviewDashboardView() {
+function OverviewDashboardView({ dashboardData }: { dashboardData: StudentDashboardData }) {
   const authUser = useStoredAuthUser();
-  const displayName = authUser?.fullName?.trim() || 'AcaFlow Student';
+  const [confirmingCourseId, setConfirmingCourseId] = useState<number | null>(null);
+  const [inviteMessage, setInviteMessage] = useState('');
+  const liveCourses = useMemo(
+    () => buildLiveCourseCards(dashboardData.courses, dashboardData.summary),
+    [dashboardData.courses, dashboardData.summary],
+  );
+  const liveFocusCards = useMemo(() => buildLiveFocusCards(dashboardData.assignments), [dashboardData.assignments]);
+  const displayName = dashboardData.profile?.fullName?.trim() || authUser?.fullName?.trim() || 'AcaFlow Student';
+  const currentGpa =
+    dashboardData.profile?.currentGpa !== null && dashboardData.profile?.currentGpa !== undefined
+      ? dashboardData.profile.currentGpa.toFixed(2)
+      : '--';
+  const earnedCredits =
+    dashboardData.profile?.earnedCredits !== null && dashboardData.profile?.earnedCredits !== undefined
+      ? String(dashboardData.profile.earnedCredits)
+      : '--';
+  const completionAverage =
+    liveCourses.length > 0
+      ? Math.round(liveCourses.reduce((total, course) => total + course.progress, 0) / liveCourses.length)
+      : 0;
+  const liveOverviewMetrics = [
+    {
+      ...overviewMetrics[0],
+      value: currentGpa,
+      note: dashboardData.profile?.department ?? 'Profile data from backend',
+    },
+    {
+      ...overviewMetrics[1],
+      label: 'Credits',
+      value: earnedCredits,
+      note: dashboardData.profile?.classYear ? `Class of ${dashboardData.profile.classYear}` : 'Update your profile for class year',
+    },
+  ];
+
+  const confirmInvitation = async (courseId: number) => {
+    const session = readAuthSession();
+
+    if (!session) {
+      setInviteMessage('Sign in again to confirm this class invitation.');
+      return;
+    }
+
+    setConfirmingCourseId(courseId);
+    setInviteMessage('');
+
+    try {
+      const response = await fetch(`${getApiBaseUrl()}/api/courses/${courseId}/enrollments/confirm`, {
+        method: 'POST',
+        headers: buildAuthHeaders(session.accessToken),
+      });
+      const payload = (await response.json().catch(() => null)) as { error?: string; message?: string } | null;
+
+      if (!response.ok) {
+        throw new Error(payload?.error?.trim() || 'Unable to confirm this class invitation.');
+      }
+
+      setInviteMessage(payload?.message?.trim() || 'Class invitation confirmed.');
+      window.setTimeout(() => window.location.reload(), 450);
+    } catch (error) {
+      setInviteMessage(error instanceof Error ? error.message : 'Unable to confirm this class invitation.');
+    } finally {
+      setConfirmingCourseId(null);
+    }
+  };
 
   return (
     <div className="space-y-4 pt-2">
+      {dashboardData.errorMessage ? (
+        <p className="rounded-[18px] border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+          {dashboardData.errorMessage}
+        </p>
+      ) : null}
       <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_248px]">
         <section className="space-y-4">
+          {!dashboardData.isLoading && dashboardData.invitations.length > 0 ? (
+            <section className="rounded-[24px] border border-[#ddcff7] bg-white px-5 py-5 shadow-[0_20px_34px_-30px_rgba(84,39,174,0.65)]">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <h2 className="text-[1.25rem] font-bold tracking-[-0.03em] text-[#28163f]">Class invitations</h2>
+                  <p className="mt-1 text-sm text-[#6b5a88]">Confirm invitations sent to the email on your account before the class appears in your courses.</p>
+                </div>
+                {inviteMessage ? <p className="max-w-md text-sm font-semibold text-[#5a2ddf]">{inviteMessage}</p> : null}
+              </div>
+              <div className="mt-4 grid gap-3">
+                {dashboardData.invitations.map((invitation) => (
+                  <article key={invitation.enrollmentId} className="flex flex-wrap items-center justify-between gap-3 rounded-[18px] bg-[#faf6ff] px-4 py-3">
+                    <div>
+                      <p className="font-semibold text-[#2a1842]">{invitation.course.name}</p>
+                      <p className="mt-1 text-sm text-[#6b5a88]">
+                        {invitation.course.lecturer?.fullName ? `Invited by ${invitation.course.lecturer.fullName}` : 'Teacher invitation'}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => confirmInvitation(invitation.course.id)}
+                      disabled={confirmingCourseId === invitation.course.id}
+                      className="rounded-full bg-[#6d38de] px-5 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {confirmingCourseId === invitation.course.id ? 'Confirming...' : 'Confirm class'}
+                    </button>
+                  </article>
+                ))}
+              </div>
+            </section>
+          ) : null}
+
           <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_220px] xl:items-start">
           <div className="space-y-3">
             <h1 className="text-[2.4rem] font-bold tracking-[-0.05em] text-[#28163f] md:text-[2.55rem]">Welcome Back</h1>
             <p className="text-[2.15rem] font-bold tracking-[-0.05em] text-[#6d38de] md:text-[2.25rem]">{displayName}</p>
             <p className="max-w-[520px] text-[0.94rem] leading-6 text-[#5f4a79]">
-              Your intellectual journey is progressing smoothly. You&apos;ve completed 72% of this semester&apos;s milestones.
+              Your dashboard is synced with the backend. You&apos;ve completed {completionAverage}% of tracked course attendance.
             </p>
           </div>
 
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-2">
-            {overviewMetrics.map((metric, index) => (
+            {liveOverviewMetrics.map((metric, index) => (
               <article
                 key={metric.label}
                 className="rounded-[20px] border border-[#efe3fb] bg-white px-3.5 py-3.5 shadow-[0_18px_28px_-28px_rgba(84,39,174,0.85)]"
@@ -674,10 +990,15 @@ function OverviewDashboardView() {
           </div>
 
           <div className="grid gap-4 md:grid-cols-2">
-            {dashboardCourses.slice(0, 4).map((course) => (
+            {(dashboardData.isLoading ? dashboardCourses.slice(0, 4) : liveCourses.slice(0, 4)).map((course) => (
               <StudentCourseCard key={course.title} course={course} />
             ))}
           </div>
+          {!dashboardData.isLoading && liveCourses.length === 0 ? (
+            <p className="rounded-[18px] border border-[#eadcf7] bg-white px-4 py-3 text-sm font-semibold text-[#5f4a79]">
+              No enrolled courses found yet.
+            </p>
+          ) : null}
 
           <div className="flex justify-center pt-1">
             <Link
@@ -700,7 +1021,7 @@ function OverviewDashboardView() {
         </div>
 
         <div className="mt-4 space-y-3">
-          {dashboardFocusCards.map((item) => (
+          {(dashboardData.isLoading ? dashboardFocusCards : liveFocusCards).map((item) => (
             <article
               key={item.title}
               className={`rounded-[18px] border border-white/70 border-l-[3px] ${item.accent} bg-white px-4 py-3.5 shadow-[0_14px_24px_-22px_rgba(89,38,179,0.9)]`}
@@ -727,6 +1048,11 @@ function OverviewDashboardView() {
             </article>
           ))}
         </div>
+        {!dashboardData.isLoading && liveFocusCards.length === 0 ? (
+          <p className="mt-4 rounded-[18px] border border-white/80 bg-white/90 p-3.5 text-sm font-semibold text-[#5f4a79]">
+            No assignments found for your enrolled courses.
+          </p>
+        ) : null}
 
         <div className="mt-4 rounded-[18px] border border-white/80 bg-white/90 p-3.5 shadow-[0_16px_26px_-24px_rgba(89,38,179,0.88)]">
           <div className="flex items-center gap-3">
@@ -757,7 +1083,13 @@ function OverviewDashboardView() {
   );
 }
 
-function CourseDetailsView() {
+function CourseDetailsView({ dashboardData }: { dashboardData: StudentDashboardData }) {
+  const liveCourses = useMemo(
+    () => buildLiveCourseCards(dashboardData.courses, dashboardData.summary),
+    [dashboardData.courses, dashboardData.summary],
+  );
+  const visibleCourses = dashboardData.isLoading ? dashboardCourses : liveCourses;
+
   return (
     <div className="space-y-6 pt-4">
       <div className="flex flex-wrap items-end justify-between gap-5">
@@ -771,7 +1103,7 @@ function CourseDetailsView() {
 
         <div className="flex flex-wrap items-center gap-3">
           <div className="rounded-full border border-[#eadcf7] bg-white px-4 py-2 text-sm font-semibold text-[#5f4a79] shadow-[0_12px_24px_-24px_rgba(90,45,223,1)]">
-            {dashboardCourses.length} courses
+            {visibleCourses.length} courses
           </div>
           <Link
             href="/student"
@@ -784,10 +1116,15 @@ function CourseDetailsView() {
       </div>
 
       <div className="grid gap-6 md:grid-cols-2 xl:grid-cols-3">
-        {dashboardCourses.map((course) => (
+        {visibleCourses.map((course) => (
           <StudentCourseCard key={course.title} course={course} compact />
         ))}
       </div>
+      {!dashboardData.isLoading && visibleCourses.length === 0 ? (
+        <p className="rounded-[18px] border border-[#eadcf7] bg-white px-4 py-3 text-sm font-semibold text-[#5f4a79]">
+          No enrolled courses found yet.
+        </p>
+      ) : null}
     </div>
   );
 }
@@ -795,10 +1132,11 @@ function CourseDetailsView() {
 function StudentDashboardContent() {
   const searchParams = useSearchParams();
   const isCourseView = searchParams.get('view') === 'courses';
+  const dashboardData = useStudentDashboardData();
 
   return (
     <div className="mx-auto max-w-[980px]">
-      {isCourseView ? <CourseDetailsView /> : <OverviewDashboardView />}
+      {isCourseView ? <CourseDetailsView dashboardData={dashboardData} /> : <OverviewDashboardView dashboardData={dashboardData} />}
     </div>
   );
 }

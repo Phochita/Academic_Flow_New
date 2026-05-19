@@ -44,6 +44,20 @@ export const getApiBaseUrl = () => {
   return configuredBaseUrl?.replace(/\/$/, '') || 'http://localhost:4000';
 };
 
+export const getAuthRequestErrorMessage = (error: unknown, fallback: string, apiBaseUrl = getApiBaseUrl()) => {
+  if (error instanceof Error) {
+    const message = error.message.trim();
+
+    if (message.toLowerCase() === 'failed to fetch') {
+      return `Cannot reach the AcaFlow API at ${apiBaseUrl}. Start the backend server or check NEXT_PUBLIC_API_BASE_URL.`;
+    }
+
+    return message || fallback;
+  }
+
+  return fallback;
+};
+
 export const normalizeRole = (role?: string | null): AppRole => {
   if (role === 'admin' || role === 'lecturer') {
     return role;

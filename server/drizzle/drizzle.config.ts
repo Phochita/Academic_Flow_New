@@ -1,11 +1,11 @@
-import dotenv = require("dotenv");
-import drizzleKit = require("drizzle-kit");
-import path = require("node:path");
-import process = require("node:process");
+import { config as loadEnv } from "dotenv";
+import { defineConfig } from "drizzle-kit";
+import path from "node:path";
+import process from "node:process";
 
-const serverRoot = path.resolve(__dirname, "..");
+const serverRoot = process.cwd();
 
-dotenv.config({ path: path.resolve(serverRoot, ".env") });
+loadEnv({ path: path.resolve(serverRoot, ".env") });
 
 const schemaPath = path
   .relative(process.cwd(), path.resolve(serverRoot, "src/db/schema/*.ts"))
@@ -23,7 +23,7 @@ if (!databaseUrl) {
   throw new Error("Missing DRIZZLE_DATABASE_URL, DIRECT_URL, or DATABASE_URL environment variable for Drizzle config.");
 }
 
-export = drizzleKit.defineConfig({
+export default defineConfig({
   schema: schemaPath,
   out: migrationsPath,
   dialect: "postgresql",

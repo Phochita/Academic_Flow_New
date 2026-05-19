@@ -8,6 +8,7 @@ import { buildAuthHeaders, getApiBaseUrl, readAuthSession } from '@/lib/auth';
 type CreateCourseFormState = {
   courseName: string;
   room: string;
+  schedule: string;
   section: string;
   subject: string;
 };
@@ -26,6 +27,7 @@ type CoursePayload = {
 const initialFormState: CreateCourseFormState = {
   courseName: '',
   room: '',
+  schedule: '',
   section: '',
   subject: '',
 };
@@ -110,6 +112,7 @@ export default function CreateCoursePage() {
     const section = form.section.trim();
     const subject = form.subject.trim();
     const room = form.room.trim();
+    const schedule = form.schedule.trim();
 
     if (courseName.length < 3) {
       setSuccessMessage('');
@@ -128,6 +131,7 @@ export default function CreateCoursePage() {
         body: JSON.stringify({
           name: courseName,
           room: room || null,
+          schedule: schedule || null,
           section: section || null,
           subject: subject || null,
         }),
@@ -217,6 +221,13 @@ export default function CreateCoursePage() {
             onChange={handleChange}
             placeholder="e.g. Room B-204"
             value={form.room}
+          />
+          <InputField
+            label="Class Hours"
+            name="schedule"
+            onChange={handleChange}
+            placeholder="e.g. Mon 9:00-10:30; Wed 13:00-14:30"
+            value={form.schedule}
           />
 
           {errorMessage ? (

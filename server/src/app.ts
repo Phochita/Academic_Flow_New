@@ -31,7 +31,7 @@ const isMissingEnvironmentVariableError = (error: unknown): error is Error => {
     return false;
   }
 
-  return /^Missing .+ environment variable\.$/.test(error.message);
+  return /^Missing .+ environment variable\.$/.test(error.message.trim());
 };
 
 app.use(
@@ -51,6 +51,10 @@ app.get("/health", (_req, res) => {
   });
 });
 
+app.get("/", (_req, res) => {
+  res.redirect(process.env.APP_URL || "http://localhost:3000");
+});
+
 const authRoutes = require("./routes/auth");
 const assignmentRoutes = require("./routes/assignments");
 const attendanceRoutes = require("./routes/attendance");
@@ -65,6 +69,7 @@ app.use("/api/courses", courseRoutes);
 app.use("/api/assignments", assignmentRoutes);
 app.use("/api/attendance", attendanceRoutes);
 app.use("/api/subscriptions", subscriptionRoutes);
+app.use("/api/subscription", subscriptionRoutes);
 app.use("/api/ai", aiRoutes);
 
 app.use((_req, _res, next) => {
@@ -95,6 +100,12 @@ app.use((error: unknown, _req: express.Request, res: express.Response, _next: ex
     });
   }
 
+  if (isMissingEnvironmentVariableError(error)) {
+    return res.status(503).json({
+      error: `${error.message} Check the backend environment variables. For local development, create server/.env from server/.env.example and restart the API.`,
+    });
+  }
+
   if (isDatabaseQueryError(error)) {
     const causeCode = error.cause?.code?.trim().toUpperCase();
     const causeMessage = error.cause?.message?.trim().toLowerCase() ?? "";
@@ -120,12 +131,6 @@ app.use((error: unknown, _req: express.Request, res: express.Response, _next: ex
 
     return res.status(500).json({
       error: "Database query failed. Check the current Supabase database connection and make sure migrations have been applied.",
-    });
-  }
-
-  if (isMissingEnvironmentVariableError(error)) {
-    return res.status(500).json({
-      error: `${error.message} Check the backend Vercel environment variables and redeploy.`,
     });
   }
 

@@ -13,6 +13,19 @@ type PlannerRequest = {
   assignments?: PlannerAssignmentInput[] | undefined;
 };
 
+type PerformanceCourseInput = {
+  courseName: string;
+  attendancePercentage: number;
+  totalRecords?: number | undefined;
+};
+
+type PerformanceAnalysisRequest = {
+  currentGpa?: number | null | undefined;
+  earnedCredits?: number | null | undefined;
+  attendancePercentage: number;
+  courses?: PerformanceCourseInput[] | undefined;
+};
+
 const clamp = (value: number, minimum: number, maximum: number) => Math.min(Math.max(value, minimum), maximum);
 
 const buildSessionLabel = (index: number, totalSessions: number, goal: string) => {
@@ -89,4 +102,75 @@ const generateStudyPlan = (input: PlannerRequest) => {
   };
 };
 
-export = { generateStudyPlan };
+const getPerformanceBand = (score: number) => {
+  if (score >= 90) {
+    return "Excellent";
+  }
+
+  if (score >= 80) {
+    return "Strong";
+  }
+
+  if (score >= 70) {
+    return "Stable";
+  }
+
+  return "Needs attention";
+};
+
+const generatePerformanceAnalysis = (input: PerformanceAnalysisRequest) => {
+  const normalizedGpa = input.currentGpa === null || input.currentGpa === undefined ? null : clamp(input.currentGpa, 0, 4);
+  const gpaScore = normalizedGpa === null ? 0 : Math.round((normalizedGpa / 4) * 100);
+  const attendanceScore = clamp(Math.round(input.attendancePercentage), 0, 100);
+  const performanceScore = normalizedGpa === null
+    ? attendanceScore
+    : Math.round(gpaScore * 0.65 + attendanceScore * 0.35);
+  const courses = (input.courses ?? []).slice(0, 8);
+  const weakestAttendanceCourse = courses
+    .filter((course) => course.totalRecords === undefined || course.totalRecords > 0)
+    .sort((a, b) => a.attendancePercentage - b.attendancePercentage)[0];
+  const strongestAttendanceCourse = courses
+    .filter((course) => course.totalRecords === undefined || course.totalRecords > 0)
+    .sort((a, b) => b.attendancePercentage - a.attendancePercentage)[0];
+  const strengths = [];
+  const improvements = [];
+
+  if (normalizedGpa !== null && normalizedGpa >= 3.2) {
+    strengths.push(`GPA is carrying performance well at ${normalizedGpa.toFixed(2)}.`);
+  } else if (normalizedGpa !== null) {
+    improvements.push(`Lift GPA from ${normalizedGpa.toFixed(2)} by targeting the next graded assignments.`);
+  } else {
+    improvements.push("Add GPA to the profile so academic performance can be scored more accurately.");
+  }
+
+  if (attendanceScore >= 90) {
+    strengths.push(`Attendance is excellent at ${attendanceScore}%.`);
+  } else if (attendanceScore >= 75) {
+    strengths.push(`Attendance is usable at ${attendanceScore}%, but it can still improve the final trend.`);
+  } else {
+    improvements.push(`Attendance is the main risk at ${attendanceScore}%. Prioritize attending the next sessions.`);
+  }
+
+  if (strongestAttendanceCourse) {
+    strengths.push(`${strongestAttendanceCourse.courseName} has the strongest attendance pattern.`);
+  }
+
+  if (weakestAttendanceCourse && weakestAttendanceCourse.attendancePercentage < 85) {
+    improvements.push(`${weakestAttendanceCourse.courseName} needs attendance recovery first.`);
+  }
+
+  return {
+    provider: "local-performance-ai",
+    performanceScore,
+    band: getPerformanceBand(performanceScore),
+    summary: `Performance is ${getPerformanceBand(performanceScore).toLowerCase()} with a ${performanceScore}% blended score from GPA and attendance.`,
+    strengths: strengths.slice(0, 3),
+    improvements: improvements.slice(0, 3),
+    recommendation:
+      weakestAttendanceCourse && weakestAttendanceCourse.attendancePercentage < 85
+        ? `Attend the next ${weakestAttendanceCourse.courseName} classes and pair that with one grade-focused study block.`
+        : "Maintain attendance consistency and use upcoming graded work to protect the GPA trend.",
+  };
+};
+
+export = { generatePerformanceAnalysis, generateStudyPlan };

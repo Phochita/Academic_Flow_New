@@ -109,7 +109,21 @@ function formatCreatedAt(createdAt?: string | null) {
   });
 }
 
-function LecturerCourseCard({ course, index }: { course: LecturerCourse; index: number }) {
+function LecturerCourseCard({
+  course,
+  index,
+  inviteDraft,
+  isInviting,
+  onInvite,
+  onInviteDraftChange,
+}: {
+  course: LecturerCourse;
+  index: number;
+  inviteDraft: string;
+  isInviting: boolean;
+  onInvite: (courseId: number) => void;
+  onInviteDraftChange: (courseId: number, value: string) => void;
+}) {
   const tone = courseTones[index % courseTones.length];
 
   return (
@@ -136,6 +150,27 @@ function LecturerCourseCard({ course, index }: { course: LecturerCourse; index: 
         <div className="flex items-center justify-between gap-3 rounded-[18px] bg-[#faf6ff] px-4 py-3">
           <span className="font-semibold text-[#4d3c68]">Created</span>
           <span>{formatCreatedAt(course.createdAt)}</span>
+        </div>
+      </div>
+
+      <div className="mt-5 rounded-[18px] border border-[#efe3fb] bg-[#fcfaff] p-4">
+        <p className="text-xs font-semibold uppercase tracking-[0.14em] text-[#7c6d92]">Invite student by account email</p>
+        <div className="mt-3 flex gap-2">
+          <input
+            type="email"
+            value={inviteDraft}
+            onChange={(event) => onInviteDraftChange(course.id, event.target.value)}
+            placeholder="student@example.com"
+            className="min-w-0 flex-1 rounded-[14px] border border-[#e4d8fb] bg-white px-3 py-2 text-sm text-[#2a1842] outline-none focus:border-[#cdb5f7]"
+          />
+          <button
+            type="button"
+            onClick={() => onInvite(course.id)}
+            disabled={isInviting}
+            className="rounded-[14px] bg-[#6d38de] px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {isInviting ? 'Inviting...' : 'Invite'}
+          </button>
         </div>
       </div>
     </article>
@@ -169,6 +204,9 @@ function LecturerDashboardContent() {
 
   const [courses, setCourses] = useState<LecturerCourse[]>([]);
   const [errorMessage, setErrorMessage] = useState('');
+  const [inviteDrafts, setInviteDrafts] = useState<Record<number, string>>({});
+  const [inviteMessage, setInviteMessage] = useState('');
+  const [invitingCourseId, setInvitingCourseId] = useState<number | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
@@ -226,6 +264,50 @@ function LecturerDashboardContent() {
   const totalCourses = courses.length;
   const newestCourse = courses[0]?.name ?? 'No courses yet';
 
+  const updateInviteDraft = (courseId: number, value: string) => {
+    setInviteDrafts((current) => ({ ...current, [courseId]: value }));
+  };
+
+  const inviteStudent = async (courseId: number) => {
+    const session = readAuthSession();
+    const studentEmail = inviteDrafts[courseId]?.trim();
+
+    if (!session) {
+      router.replace('/login');
+      return;
+    }
+
+    if (!studentEmail) {
+      setInviteMessage('');
+      setErrorMessage('Enter the email the student used to create their account.');
+      return;
+    }
+
+    setInvitingCourseId(courseId);
+    setErrorMessage('');
+    setInviteMessage('');
+
+    try {
+      const response = await fetch(`${apiBaseUrl}/api/courses/${courseId}/enrollments`, {
+        method: 'POST',
+        headers: buildAuthHeaders(session.accessToken),
+        body: JSON.stringify({ studentEmail }),
+      });
+      const payload = (await response.json().catch(() => null)) as { message?: string; error?: string; student?: { fullName?: string | null; email?: string | null } } | null;
+
+      if (!response.ok) {
+        throw new Error(payload?.error?.trim() || 'Unable to invite this student right now.');
+      }
+
+      setInviteDrafts((current) => ({ ...current, [courseId]: '' }));
+      setInviteMessage(payload?.message?.trim() || `${payload?.student?.email ?? studentEmail} invited successfully.`);
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : 'Unable to invite this student right now.');
+    } finally {
+      setInvitingCourseId(null);
+    }
+  };
+
   return (
     <div className="mx-auto max-w-[1120px] space-y-6">
       <LecturerTabsNav />
@@ -240,6 +322,11 @@ function LecturerDashboardContent() {
         {errorMessage ? (
           <div className="rounded-[20px] border border-red-200 bg-red-50 px-5 py-4 text-sm font-semibold text-red-700">
             {errorMessage}
+          </div>
+        ) : null}
+        {inviteMessage ? (
+          <div className="rounded-[20px] border border-emerald-200 bg-emerald-50 px-5 py-4 text-sm font-semibold text-emerald-700">
+            {inviteMessage}
           </div>
         ) : null}
 
@@ -343,7 +430,15 @@ function LecturerDashboardContent() {
           ) : (
             <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3">
               {courses.map((course, index) => (
-                <LecturerCourseCard key={course.id} course={course} index={index} />
+                <LecturerCourseCard
+                  key={course.id}
+                  course={course}
+                  index={index}
+                  inviteDraft={inviteDrafts[course.id] ?? ''}
+                  isInviting={invitingCourseId === course.id}
+                  onInvite={inviteStudent}
+                  onInviteDraftChange={updateInviteDraft}
+                />
               ))}
               <CreateCourseCard />
             </div>

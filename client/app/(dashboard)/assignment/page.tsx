@@ -1,7 +1,9 @@
 'use client';
 
-import { Suspense, useMemo, useRef, useState } from 'react';
+import Link from 'next/link';
+import { Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
+import { buildAuthHeaders, getApiBaseUrl, getAuthRequestErrorMessage, readAuthSession } from '@/lib/auth';
 
 type UploadItem = {
   id: string;
@@ -14,9 +16,26 @@ type SubmissionState = {
   totalItems: number;
 };
 
-const footerLinks = ['Privacy Policy', 'Terms of Service', 'Institutional Access', 'Contact Support'] as const;
+type ApiAssignment = {
+  course?: {
+    code?: string | null;
+    name?: string | null;
+  } | null;
+  description?: string | null;
+  dueDate?: string | null;
+  id: number;
+  maxScore?: number | string | null;
+  submission?: {
+    fileUrl?: string | null;
+    id?: number | null;
+    status?: string | null;
+    submissionText?: string | null;
+    submittedAt?: string | null;
+  } | null;
+  title: string;
+};
 
-const teacherAssignedDeadline = '2026-04-18T23:59:00';
+const footerLinks = ['Privacy Policy', 'Terms of Service', 'Institutional Access', 'Contact Support'] as const;
 
 function AssignmentArrowIcon() {
   return (
@@ -105,28 +124,122 @@ function createUploadItems(files: FileList | null, kindLabel: string) {
 
 function AssignmentPageContent() {
   const searchParams = useSearchParams();
+  const assignmentId = searchParams.get('id');
   const selectedCourse = searchParams.get('course');
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const mediaInputRef = useRef<HTMLInputElement | null>(null);
+  const [assignment, setAssignment] = useState<ApiAssignment | null>(null);
   const [documentItems, setDocumentItems] = useState<UploadItem[]>([]);
   const [mediaItems, setMediaItems] = useState<UploadItem[]>([]);
   const [links, setLinks] = useState<UploadItem[]>([]);
   const [linkDraft, setLinkDraft] = useState('');
   const [isLinkEditorOpen, setIsLinkEditorOpen] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
+  const [successMessage, setSuccessMessage] = useState('');
+  const [isLoading, setIsLoading] = useState(Boolean(assignmentId));
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const [submission, setSubmission] = useState<SubmissionState | null>(null);
 
-  const formattedDeadline = useMemo(
-    () =>
-      new Intl.DateTimeFormat('en-US', {
+  useEffect(() => {
+    let ignore = false;
+
+    const loadAssignment = async () => {
+      if (!assignmentId) {
+        setIsLoading(false);
+        return;
+      }
+
+      const session = readAuthSession();
+
+      if (!session) {
+        if (!ignore) {
+          setErrorMessage('Sign in again to check and submit this assignment.');
+          setIsLoading(false);
+        }
+        return;
+      }
+
+      try {
+        const response = await fetch(`${getApiBaseUrl()}/api/assignments/${assignmentId}`, {
+          headers: buildAuthHeaders(session.accessToken),
+        });
+        const payload = (await response.json().catch(() => null)) as { assignment?: ApiAssignment; error?: string; message?: string } | null;
+
+        if (!response.ok || !payload?.assignment) {
+          throw new Error(payload?.error?.trim() || payload?.message?.trim() || 'Unable to load this assignment.');
+        }
+
+        if (!ignore) {
+          setAssignment(payload.assignment);
+          setSubmission(
+            payload.assignment.submission?.submittedAt
+              ? {
+                  submittedAt: formatSubmittedAt(payload.assignment.submission.submittedAt),
+                  totalItems: payload.assignment.submission.fileUrl ? 2 : 1,
+                }
+              : null,
+          );
+          setErrorMessage('');
+          setIsLoading(false);
+        }
+      } catch (error) {
+        if (!ignore) {
+          setErrorMessage(getAuthRequestErrorMessage(error, 'Unable to load this assignment right now.'));
+          setIsLoading(false);
+        }
+      }
+    };
+
+    void loadAssignment();
+
+    return () => {
+      ignore = true;
+    };
+  }, [assignmentId]);
+
+  const formattedDeadline = useMemo(() => formatDeadline(assignment?.dueDate), [assignment?.dueDate]);
+
+  const assignmentCourseName = assignment?.course?.name?.trim() || assignment?.course?.code?.trim() || selectedCourse;
+
+  const assignmentDescription =
+    assignment?.description?.trim() ||
+    'Upload documents, supporting media, or a working link for your final submission.';
+
+  const existingSubmissionText = assignment?.submission?.submissionText?.trim();
+
+  const totalSubmissionItems = documentItems.length + mediaItems.length + links.length;
+
+  function formatDeadline(value?: string | null) {
+    if (!value) {
+      return 'No due date set';
+    }
+
+    const dueDate = new Date(value);
+
+    if (Number.isNaN(dueDate.getTime())) {
+      return 'No due date set';
+    }
+
+    return new Intl.DateTimeFormat('en-US', {
         month: 'long',
         day: 'numeric',
         year: 'numeric',
-      }).format(new Date(teacherAssignedDeadline)),
-    []
-  );
+        hour: 'numeric',
+        minute: '2-digit',
+      }).format(dueDate);
+  }
 
-  const totalSubmissionItems = documentItems.length + mediaItems.length + links.length;
+  function formatSubmittedAt(value?: string | null) {
+    const submittedDate = value ? new Date(value) : new Date();
+
+    return new Intl.DateTimeFormat('en-US', {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+    }).format(Number.isNaN(submittedDate.getTime()) ? new Date() : submittedDate);
+  }
 
   const addLink = () => {
     const trimmedLink = linkDraft.trim();
@@ -160,23 +273,64 @@ function AssignmentPageContent() {
     setter((items) => items.filter((item) => item.id !== targetId));
   };
 
-  const submitAssignment = () => {
+  const submitAssignment = async () => {
+    if (!assignmentId) {
+      setErrorMessage('Open this page from Assignments so AcaFlow knows which assignment to submit.');
+      return;
+    }
+
     if (totalSubmissionItems === 0) {
       setErrorMessage('Add at least one file, video/image, or link before submitting.');
       return;
     }
 
-    setSubmission({
-      submittedAt: new Intl.DateTimeFormat('en-US', {
-        month: 'short',
-        day: 'numeric',
-        year: 'numeric',
-        hour: 'numeric',
-        minute: '2-digit',
-      }).format(new Date()),
-      totalItems: totalSubmissionItems,
-    });
+    const session = readAuthSession();
+
+    if (!session) {
+      setErrorMessage('Sign in again to submit this assignment.');
+      return;
+    }
+
+    const attachmentLines = [
+      ...documentItems.map((item) => `Document: ${item.name} (${item.meta})`),
+      ...mediaItems.map((item) => `Media: ${item.name} (${item.meta})`),
+      ...links.map((item) => `Link: ${item.name}`),
+    ];
+    const primaryLink = links[0]?.name;
+
+    setIsSubmitting(true);
     setErrorMessage('');
+    setSuccessMessage('');
+
+    try {
+      const response = await fetch(`${getApiBaseUrl()}/api/assignments/${assignmentId}/submissions`, {
+        method: 'POST',
+        headers: buildAuthHeaders(session.accessToken),
+        body: JSON.stringify({
+          ...(primaryLink ? { fileUrl: primaryLink } : {}),
+          submissionText: attachmentLines.join('\n'),
+        }),
+      });
+      const payload = (await response.json().catch(() => null)) as {
+        error?: string;
+        message?: string;
+        submission?: { submittedAt?: string | null };
+      } | null;
+
+      if (!response.ok) {
+        throw new Error(payload?.error?.trim() || payload?.message?.trim() || 'Unable to submit this assignment.');
+      }
+
+      setSubmission({
+        submittedAt: formatSubmittedAt(payload?.submission?.submittedAt),
+        totalItems: totalSubmissionItems,
+      });
+      setSuccessMessage(payload?.message?.trim() || 'Assignment submitted successfully.');
+    } catch (error) {
+      setErrorMessage(getAuthRequestErrorMessage(error, 'Unable to submit this assignment right now.'));
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (
@@ -194,19 +348,19 @@ function AssignmentPageContent() {
                 <h1 className="text-3xl font-bold tracking-[-0.04em] text-[#2f1e47] md:text-[2.75rem]">My</h1>
                 <p className="text-3xl font-bold tracking-[-0.04em] text-[#6d38de] md:text-[2.55rem]">Assignment</p>
                 <p className="max-w-2xl text-base text-[#5f4a79]">
-                  {selectedCourse
-                    ? `Submit your work for ${selectedCourse}. Teachers will review the submission and grade your points later.`
+                  {assignmentCourseName
+                    ? `Submit your work for ${assignmentCourseName}. Teachers will review the submission and grade your points later.`
                     : 'Submit your work here. Teachers will review the submission and grade your points later.'}
                 </p>
               </div>
 
-              <button
-                type="button"
+              <Link
+                href="/assignments"
                 className="mt-2 inline-flex items-center gap-2 text-[0.86rem] font-semibold text-[#6b32ef] transition hover:text-[#5321cf]"
               >
-                View all categories
+                Back to assignments
                 <AssignmentArrowIcon />
-              </button>
+              </Link>
             </div>
 
             <article className="rounded-[22px] border border-[#f1ebfb] bg-white px-5 py-5 shadow-[0_24px_40px_-34px_rgba(84,49,169,0.28)]">
@@ -214,19 +368,27 @@ function AssignmentPageContent() {
                 <AssignmentCardIcon />
               </div>
 
-              <h2 className="mt-5 text-[1.45rem] font-semibold tracking-[-0.03em] text-[#2f2738]">Assignment</h2>
-              {selectedCourse ? (
-                <p className="mt-2 text-sm font-medium text-[#6d38de]">{selectedCourse}</p>
+              <h2 className="mt-5 text-[1.45rem] font-semibold tracking-[-0.03em] text-[#2f2738]">
+                {isLoading ? 'Loading assignment...' : assignment?.title ?? 'Assignment'}
+              </h2>
+              {assignmentCourseName ? (
+                <p className="mt-2 text-sm font-medium text-[#6d38de]">{assignmentCourseName}</p>
               ) : null}
 
               <p className="mt-8 max-w-2xl text-[0.82rem] leading-5 text-[#998ea9]">
-                Description of the materials. Upload documents, supporting media, or a working link for your final submission.
+                {assignmentDescription}
               </p>
 
               <div className="mt-8 space-y-1">
                 <p className="text-[0.66rem] font-bold uppercase tracking-[0.14em] text-[#6b32ef]">Deadlines</p>
                 <p className="text-sm font-semibold text-[#2f1e47]">{formattedDeadline}</p>
               </div>
+
+              {!assignmentId ? (
+                <p className="mt-5 rounded-[14px] border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-800">
+                  Open a specific assignment from the Assignments page before submitting.
+                </p>
+              ) : null}
             </article>
           </section>
 
@@ -415,6 +577,13 @@ function AssignmentPageContent() {
                     </p>
                   </div>
                 ) : null}
+                {existingSubmissionText ? (
+                  <div className="mt-4 rounded-[14px] bg-[#faf7ff] px-4 py-3">
+                    <p className="text-sm font-semibold text-[#4f2fd1]">Current submission</p>
+                    <pre className="mt-2 whitespace-pre-wrap text-xs leading-5 text-[#5f4a79]">{existingSubmissionText}</pre>
+                  </div>
+                ) : null}
+                {successMessage ? <p className="mt-4 text-sm font-medium text-[#17945d]">{successMessage}</p> : null}
                 {errorMessage ? <p className="mt-4 text-sm font-medium text-[#c53459]">{errorMessage}</p> : null}
               </div>
 
@@ -422,9 +591,10 @@ function AssignmentPageContent() {
                 <button
                   type="button"
                   onClick={submitAssignment}
-                  className="min-w-[154px] rounded-[8px] bg-[linear-gradient(135deg,#7b47ed_0%,#5d34df_100%)] px-6 py-3 text-sm font-semibold text-white shadow-[0_20px_34px_-24px_rgba(93,52,223,1)] transition hover:scale-[1.01]"
+                  disabled={isLoading || isSubmitting || !assignmentId}
+                  className="min-w-[154px] rounded-[8px] bg-[linear-gradient(135deg,#7b47ed_0%,#5d34df_100%)] px-6 py-3 text-sm font-semibold text-white shadow-[0_20px_34px_-24px_rgba(93,52,223,1)] transition hover:scale-[1.01] disabled:cursor-not-allowed disabled:opacity-60"
                 >
-                  Submit
+                  {isSubmitting ? 'Submitting...' : submission ? 'Resubmit' : 'Submit'}
                 </button>
               </div>
             </div>

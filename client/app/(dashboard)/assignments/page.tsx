@@ -1,7 +1,9 @@
 'use client';
 
 import type { ReactNode } from 'react';
-import { startTransition, useState } from 'react';
+import Link from 'next/link';
+import { startTransition, useEffect, useMemo, useState } from 'react';
+import { buildAuthHeaders, getApiBaseUrl, getAuthRequestErrorMessage, readAuthSession } from '@/lib/auth';
 
 type AssignmentFilter = 'all' | 'pending' | 'completed';
 type AssignmentStatus = 'pending' | 'submitted' | 'graded';
@@ -13,131 +15,47 @@ type AssignmentItem = {
   course: string;
   dueLabel: string;
   dueTime?: string;
+  grade: number | null;
+  maxScore: number | null;
   status: AssignmentStatus;
   icon: ReactNode;
   iconTone: string;
   courseTone: string;
 };
 
-type DailyTask = {
-  id: string;
-  label: string;
-  done: boolean;
+type ApiAssignment = {
+  course?: {
+    code?: string | null;
+    lecturer?: {
+      fullName?: string | null;
+    } | null;
+    name?: string | null;
+  } | null;
+  description?: string | null;
+  dueDate?: string | null;
+  id: number;
+  maxScore?: number | string | null;
+  submission?: {
+    grade?: number | string | null;
+    gradedAt?: string | null;
+    id?: number | null;
+    status?: string | null;
+    submittedAt?: string | null;
+  } | null;
+  title: string;
 };
 
-const assignmentItems: AssignmentItem[] = [
-  {
-    id: 'neural-networks',
-    title: 'Neural Networks Research',
-    subtitle: 'Module 4: Deep Learning',
-    course: 'Computer Science',
-    dueLabel: 'Tomorrow',
-    dueTime: '11:59 PM',
-    status: 'pending',
-    iconTone: 'bg-[#ede3ff] text-[#6d38de]',
-    courseTone: 'bg-[#ead8ff] text-[#7a5a9c]',
-    icon: (
-      <svg viewBox="0 0 24 24" className="h-6 w-6" fill="none" stroke="currentColor" strokeWidth="1.9" aria-hidden="true">
-        <path d="M7.5 3.5h6l4 4V20a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 5.5 20V5A1.5 1.5 0 0 1 7 3.5h.5Z" strokeLinecap="round" strokeLinejoin="round" />
-        <path d="M13.5 3.5V8h4" strokeLinecap="round" strokeLinejoin="round" />
-        <path d="M8.5 12h7M8.5 15.5h7" strokeLinecap="round" />
-      </svg>
-    ),
-  },
-  {
-    id: 'economic-theory',
-    title: 'Economic Theory Essay',
-    subtitle: 'Macroeconomics 101',
-    course: 'Economics',
-    dueLabel: 'Oct 12, 2023',
-    status: 'graded',
-    iconTone: 'bg-[#f8e8ee] text-[#b33763]',
-    courseTone: 'bg-[#ead8ff] text-[#7a5a9c]',
-    icon: (
-      <svg viewBox="0 0 24 24" className="h-6 w-6" fill="none" stroke="currentColor" strokeWidth="1.9" aria-hidden="true">
-        <path d="m4 4 16 16M15.5 4H20v4.5M8.5 20H4v-4.5" strokeLinecap="round" strokeLinejoin="round" />
-        <path d="M9 9h5l-5 5h6" strokeLinecap="round" strokeLinejoin="round" />
-      </svg>
-    ),
-  },
-  {
-    id: 'chemistry-lab',
-    title: 'Lab Report: Chemistry',
-    subtitle: 'Organic Lab B',
-    course: 'Organic Chemistry',
-    dueLabel: 'Oct 14, 2023',
-    status: 'submitted',
-    iconTone: 'bg-[#eae8ff] text-[#4f46e5]',
-    courseTone: 'bg-[#ead8ff] text-[#7a5a9c]',
-    icon: (
-      <svg viewBox="0 0 24 24" className="h-6 w-6" fill="none" stroke="currentColor" strokeWidth="1.9" aria-hidden="true">
-        <path d="M10 3v6.5L5.5 18A2.5 2.5 0 0 0 7.7 21h8.6a2.5 2.5 0 0 0 2.2-3L14 9.5V3" strokeLinecap="round" strokeLinejoin="round" />
-        <path d="M8.5 14h7" strokeLinecap="round" />
-      </svg>
-    ),
-  },
-  {
-    id: 'ux-audit',
-    title: 'UX Accessibility Audit',
-    subtitle: 'Human Computer Interaction',
-    course: 'Design Systems',
-    dueLabel: 'Friday',
-    dueTime: '6:00 PM',
-    status: 'pending',
-    iconTone: 'bg-[#e8efff] text-[#3f5de0]',
-    courseTone: 'bg-[#dce9ff] text-[#5673a7]',
-    icon: (
-      <svg viewBox="0 0 24 24" className="h-6 w-6" fill="none" stroke="currentColor" strokeWidth="1.9" aria-hidden="true">
-        <circle cx="12" cy="12" r="3.5" />
-        <path d="M19.4 15a8 8 0 0 0 0-6M4.6 9a8 8 0 0 0 0 6M16.8 18.5a8 8 0 0 0 2.6-2.3M4.6 15a8 8 0 0 0 2.6 2.3M7.2 5.5A8 8 0 0 0 4.6 8M19.4 8a8 8 0 0 0-2.6-2.5" strokeLinecap="round" />
-      </svg>
-    ),
-  },
-  {
-    id: 'ethics-reflection',
-    title: 'AI Ethics Reflection',
-    subtitle: 'Responsible AI Seminar',
-    course: 'Philosophy',
-    dueLabel: 'Oct 18, 2023',
-    status: 'graded',
-    iconTone: 'bg-[#f3ebff] text-[#8848e8]',
-    courseTone: 'bg-[#f1e5ff] text-[#8d6ea8]',
-    icon: (
-      <svg viewBox="0 0 24 24" className="h-6 w-6" fill="none" stroke="currentColor" strokeWidth="1.9" aria-hidden="true">
-        <path d="M7 4h10a2 2 0 0 1 2 2v13l-4-2-4 2-4-2-4 2V6a2 2 0 0 1 2-2h2Z" strokeLinecap="round" strokeLinejoin="round" />
-        <path d="M9 8h6M9 12h6" strokeLinecap="round" />
-      </svg>
-    ),
-  },
-  {
-    id: 'data-viz',
-    title: 'Data Visualization Storyboard',
-    subtitle: 'Applied Analytics',
-    course: 'Data Science',
-    dueLabel: 'Next Monday',
-    dueTime: '9:00 AM',
-    status: 'pending',
-    iconTone: 'bg-[#e6f7ff] text-[#1784c7]',
-    courseTone: 'bg-[#d8efff] text-[#497ea2]',
-    icon: (
-      <svg viewBox="0 0 24 24" className="h-6 w-6" fill="none" stroke="currentColor" strokeWidth="1.9" aria-hidden="true">
-        <path d="M5 19V9m7 10V5m7 14v-7" strokeLinecap="round" />
-        <path d="M3 19h18" strokeLinecap="round" />
-      </svg>
-    ),
-  },
+const assignmentVisualTones = [
+  { iconTone: 'bg-[#ede3ff] text-[#6d38de]', courseTone: 'bg-[#ead8ff] text-[#7a5a9c]' },
+  { iconTone: 'bg-[#eae8ff] text-[#4f46e5]', courseTone: 'bg-[#dce9ff] text-[#5673a7]' },
+  { iconTone: 'bg-[#e6f7ff] text-[#1784c7]', courseTone: 'bg-[#d8efff] text-[#497ea2]' },
+  { iconTone: 'bg-[#f8e8ee] text-[#b33763]', courseTone: 'bg-[#f1e5ff] text-[#8d6ea8]' },
 ];
 
 const filterTabs: { label: string; value: AssignmentFilter }[] = [
   { label: 'All', value: 'all' },
   { label: 'Pending', value: 'pending' },
   { label: 'Completed', value: 'completed' },
-];
-
-const initialDailyTasks: DailyTask[] = [
-  { id: 'review-lab', label: 'Review Lab Safety', done: true },
-  { id: 'draft-neural', label: 'Start Neural Net Draft', done: false },
-  { id: 'read-macro', label: 'Read Macro Ch. 5', done: false },
 ];
 
 function ClipboardGlowIcon() {
@@ -157,6 +75,89 @@ function SparkIcon() {
     </svg>
   );
 }
+
+function AssignmentDocumentIcon() {
+  return (
+    <svg viewBox="0 0 24 24" className="h-6 w-6" fill="none" stroke="currentColor" strokeWidth="1.9" aria-hidden="true">
+      <path d="M7.5 3.5h6l4 4V20a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 5.5 20V5A1.5 1.5 0 0 1 7 3.5h.5Z" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M13.5 3.5V8h4" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M8.5 12h7M8.5 15.5h7" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+const formatDueParts = (dueDate?: string | null) => {
+  if (!dueDate) {
+    return { dueLabel: 'No due date' };
+  }
+
+  const due = new Date(dueDate);
+
+  if (Number.isNaN(due.getTime())) {
+    return { dueLabel: 'No due date' };
+  }
+
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const dueDay = new Date(due.getFullYear(), due.getMonth(), due.getDate());
+  const dayDiff = Math.round((dueDay.getTime() - today.getTime()) / 86400000);
+  const dueTime = new Intl.DateTimeFormat('en-US', {
+    hour: 'numeric',
+    minute: '2-digit',
+  }).format(due);
+
+  if (dayDiff === 0) {
+    return { dueLabel: 'Today', dueTime };
+  }
+
+  if (dayDiff === 1) {
+    return { dueLabel: 'Tomorrow', dueTime };
+  }
+
+  return {
+    dueLabel: new Intl.DateTimeFormat('en-US', {
+      day: 'numeric',
+      month: 'short',
+      year: due.getFullYear() === now.getFullYear() ? undefined : 'numeric',
+    }).format(due),
+    dueTime,
+  };
+};
+
+const normalizeNumber = (value?: number | string | null) => {
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : null;
+  }
+
+  if (typeof value === 'string') {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  return null;
+};
+
+const mapAssignment = (assignment: ApiAssignment, index: number): AssignmentItem => {
+  const tones = assignmentVisualTones[index % assignmentVisualTones.length];
+  const lecturerName = assignment.course?.lecturer?.fullName?.trim();
+  const grade = normalizeNumber(assignment.submission?.grade);
+  const maxScore = normalizeNumber(assignment.maxScore);
+  const hasSubmission = Boolean(assignment.submission?.submittedAt || assignment.submission?.id);
+
+  return {
+    id: String(assignment.id),
+    title: assignment.title,
+    subtitle: lecturerName ? `Assigned by ${lecturerName}` : 'Assigned by teacher',
+    course: assignment.course?.name?.trim() || assignment.course?.code?.trim() || 'Assigned class',
+    ...formatDueParts(assignment.dueDate),
+    grade,
+    maxScore,
+    status: grade !== null ? 'graded' : hasSubmission ? 'submitted' : 'pending',
+    iconTone: tones.iconTone,
+    courseTone: tones.courseTone,
+    icon: <AssignmentDocumentIcon />,
+  };
+};
 
 function AssignmentStatusBadge({ status }: { status: AssignmentStatus }) {
   const styles = {
@@ -180,9 +181,54 @@ function AssignmentStatusBadge({ status }: { status: AssignmentStatus }) {
 
 export default function AssignmentsDashboard() {
   const [activeFilter, setActiveFilter] = useState<AssignmentFilter>('all');
-  const [dailyTasks, setDailyTasks] = useState(initialDailyTasks);
+  const [assignmentItems, setAssignmentItems] = useState<AssignmentItem[]>([]);
+  const [errorMessage, setErrorMessage] = useState('');
+  const [isLoading, setIsLoading] = useState(true);
 
-  const visibleAssignments = assignmentItems.filter((assignment) => {
+  useEffect(() => {
+    let ignore = false;
+    const session = readAuthSession();
+
+    const loadAssignments = async () => {
+      if (!session) {
+        if (!ignore) {
+          setErrorMessage('Sign in again to load assignments from your assigned classes.');
+          setIsLoading(false);
+        }
+        return;
+      }
+
+      try {
+        const response = await fetch(`${getApiBaseUrl()}/api/assignments`, {
+          headers: buildAuthHeaders(session.accessToken),
+        });
+        const payload = (await response.json().catch(() => null)) as { assignments?: ApiAssignment[]; message?: string } | null;
+
+        if (!response.ok) {
+          throw new Error(payload?.message || 'Unable to load assignments right now.');
+        }
+
+        if (!ignore) {
+          setAssignmentItems((payload?.assignments ?? []).map(mapAssignment));
+          setErrorMessage('');
+          setIsLoading(false);
+        }
+      } catch (error) {
+        if (!ignore) {
+          setErrorMessage(getAuthRequestErrorMessage(error, 'Unable to load assignments right now.'));
+          setIsLoading(false);
+        }
+      }
+    };
+
+    void loadAssignments();
+
+    return () => {
+      ignore = true;
+    };
+  }, []);
+
+  const visibleAssignments = useMemo(() => assignmentItems.filter((assignment) => {
     if (activeFilter === 'all') {
       return true;
     }
@@ -192,10 +238,28 @@ export default function AssignmentsDashboard() {
     }
 
     return assignment.status === 'submitted' || assignment.status === 'graded';
-  });
+  }), [activeFilter, assignmentItems]);
 
   const pendingCount = assignmentItems.filter((assignment) => assignment.status === 'pending').length;
+  const gradedAssignments = assignmentItems.filter((assignment) => assignment.grade !== null && assignment.maxScore && assignment.maxScore > 0);
+  const averageScore = gradedAssignments.length > 0
+    ? Math.round(
+        gradedAssignments.reduce((total, assignment) => total + ((assignment.grade ?? 0) / (assignment.maxScore ?? 1)) * 100, 0) /
+          gradedAssignments.length,
+      )
+    : null;
+  const averageScoreWidth = `${Math.min(Math.max(averageScore ?? 0, 0), 100)}%`;
+  const dailyTasks = assignmentItems
+    .filter((assignment) => assignment.status === 'pending')
+    .slice(0, 5)
+    .map((assignment) => ({
+      id: assignment.id,
+      label: assignment.title,
+      done: false,
+      meta: `${assignment.course} - ${assignment.dueLabel}${assignment.dueTime ? `, ${assignment.dueTime}` : ''}`,
+    }));
   const remainingTasks = dailyTasks.filter((task) => !task.done).length;
+  const priorityAssignment = assignmentItems.find((assignment) => assignment.status === 'pending') ?? assignmentItems[0] ?? null;
 
   return (
     <div className="mx-auto max-w-[1120px] space-y-6">
@@ -203,7 +267,7 @@ export default function AssignmentsDashboard() {
         <div className="space-y-2">
           <h1 className="text-3xl font-bold tracking-[-0.05em] text-[#2a1842] md:text-[2.75rem]">Assignments</h1>
           <p className="max-w-2xl text-base leading-7 text-[#5f4a79]">
-            Keep track of your academic progress and deadlines.
+            Keep track of teacher-assigned coursework from your backend classes.
           </p>
         </div>
 
@@ -252,9 +316,13 @@ export default function AssignmentsDashboard() {
             </div>
 
             <div className="max-w-md">
-              <h2 className="text-3xl font-bold tracking-[-0.05em] text-[#2d1847] md:text-[2.55rem]">{pendingCount} Pending</h2>
+              <h2 className="text-3xl font-bold tracking-[-0.05em] text-[#2d1847] md:text-[2.55rem]">
+                {isLoading ? '...' : pendingCount} Pending
+              </h2>
               <p className="mt-3 text-base leading-7 text-[#5f4a79]">
-                Approaching deadlines require focus. Your priority is &quot;Neural Networks&quot;.
+                {priorityAssignment
+                  ? `Approaching deadlines require focus. Your priority is "${priorityAssignment.title}".`
+                  : 'Assignments will appear here when teachers publish work for your classes.'}
               </p>
             </div>
           </div>
@@ -266,22 +334,31 @@ export default function AssignmentsDashboard() {
 
         <section className="rounded-[28px] border border-[#eadcf7] bg-white px-6 py-6 shadow-[0_24px_40px_-34px_rgba(95,41,210,0.65)]">
           <p className="text-[0.78rem] font-semibold uppercase tracking-[0.24em] text-[#6d5b87]">Average Score</p>
-          <p className="mt-4 text-[2.5rem] font-bold tracking-[-0.06em] text-[#4f46e5]">92%</p>
+          <p className="mt-4 text-[2.5rem] font-bold tracking-[-0.06em] text-[#4f46e5]">
+            {averageScore === null ? '--' : `${averageScore}%`}
+          </p>
           <div className="mt-5 h-2.5 rounded-full bg-[#ece4fb]">
-            <div className="h-2.5 w-[84%] rounded-full bg-[linear-gradient(90deg,#6f3de4_0%,#4d56e7_100%)] shadow-[0_8px_16px_-12px_rgba(79,70,229,0.9)]" />
+            <div
+              className="h-2.5 rounded-full bg-[linear-gradient(90deg,#6f3de4_0%,#4d56e7_100%)] shadow-[0_8px_16px_-12px_rgba(79,70,229,0.9)]"
+              style={{ width: averageScoreWidth }}
+            />
           </div>
-          <p className="mt-3 text-sm font-semibold uppercase tracking-[0.14em] text-[#9c8eb2]">Top 5% of Class</p>
+          <p className="mt-3 text-sm font-semibold uppercase tracking-[0.14em] text-[#9c8eb2]">
+            {gradedAssignments.length > 0 ? `${gradedAssignments.length} graded submission${gradedAssignments.length === 1 ? '' : 's'}` : 'No grades yet'}
+          </p>
         </section>
 
         <section className="rounded-[28px] border border-[#eadcf7] bg-white px-6 py-6 shadow-[0_24px_40px_-34px_rgba(95,41,210,0.65)]">
           <p className="text-[0.78rem] font-semibold uppercase tracking-[0.24em] text-[#6d5b87]">Completion</p>
-          <p className="mt-4 text-[2.35rem] font-bold tracking-[-0.06em] text-[#a52f58]">18/20</p>
+          <p className="mt-4 text-[2.35rem] font-bold tracking-[-0.06em] text-[#a52f58]">
+            {assignmentItems.length - pendingCount}/{assignmentItems.length}
+          </p>
           <p className="mt-4 inline-flex items-center gap-2 text-lg font-semibold text-[#b3345f]">
             <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
               <path d="m6 15 4-4 3 3 5-5" strokeLinecap="round" strokeLinejoin="round" />
               <path d="M18 9h-4V5" strokeLinecap="round" strokeLinejoin="round" />
             </svg>
-            +2 from last month
+            Backend synced
           </p>
         </section>
       </div>
@@ -296,6 +373,26 @@ export default function AssignmentsDashboard() {
           </div>
 
           <div className="divide-y divide-[#f2eafc]">
+            {isLoading ? (
+              <div className="px-6 py-8 text-sm font-semibold text-[#6d38de] md:px-10">
+                Loading assignments from your assigned classes...
+              </div>
+            ) : null}
+
+            {!isLoading && errorMessage ? (
+              <div className="px-6 py-8 md:px-10">
+                <p className="rounded-[18px] border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-700">
+                  {errorMessage}
+                </p>
+              </div>
+            ) : null}
+
+            {!isLoading && !errorMessage && visibleAssignments.length === 0 ? (
+              <div className="px-6 py-8 text-sm font-semibold text-[#5f4a79] md:px-10">
+                No assignments found for this filter. Teacher-assigned classwork will show here after it is created.
+              </div>
+            ) : null}
+
             {visibleAssignments.map((assignment) => (
               <article key={assignment.id} className="px-6 py-6 md:px-10 md:py-9">
                 <div className="grid gap-6 md:grid-cols-[minmax(0,2.2fr)_1fr_1fr_auto] md:items-center">
@@ -327,6 +424,12 @@ export default function AssignmentsDashboard() {
                   <div>
                     <p className="text-[0.72rem] font-semibold uppercase tracking-[0.2em] text-[#9a8cad] md:hidden">Status</p>
                     <AssignmentStatusBadge status={assignment.status} />
+                    <Link
+                      href={`/assignment?id=${encodeURIComponent(assignment.id)}`}
+                      className="mt-3 inline-flex rounded-full bg-[#6d38de] px-4 py-2 text-sm font-semibold text-white shadow-[0_16px_28px_-24px_rgba(93,52,223,1)] transition hover:bg-[#5d2fd0]"
+                    >
+                      {assignment.status === 'pending' ? 'Check / Submit' : 'View submission'}
+                    </Link>
                   </div>
                 </div>
               </article>
@@ -344,17 +447,9 @@ export default function AssignmentsDashboard() {
             </div>
 
             <div className="mt-6 space-y-4">
-              {dailyTasks.map((task) => (
-                <button
+              {dailyTasks.length > 0 ? dailyTasks.map((task) => (
+                <div
                   key={task.id}
-                  type="button"
-                  onClick={() =>
-                    setDailyTasks((currentTasks) =>
-                      currentTasks.map((currentTask) =>
-                        currentTask.id === task.id ? { ...currentTask, done: !currentTask.done } : currentTask
-                      )
-                    )
-                  }
                   className="flex w-full items-center gap-4 text-left"
                 >
                   <span
@@ -368,15 +463,20 @@ export default function AssignmentsDashboard() {
                       <path d="m6.5 12 3.2 3.2L17.5 7.5" strokeLinecap="round" strokeLinejoin="round" />
                     </svg>
                   </span>
-                  <span className={`text-[1.05rem] ${task.done ? 'text-[#a495be] line-through' : 'text-[#4f3c6c]'}`}>
-                    {task.label}
+                  <span className="min-w-0">
+                    <span className="block truncate text-[1.05rem] text-[#4f3c6c]">{task.label}</span>
+                    <span className="mt-1 block truncate text-xs font-medium text-[#9b8cb3]">{task.meta}</span>
                   </span>
-                </button>
-              ))}
+                </div>
+              )) : (
+                <p className="rounded-[16px] bg-[#faf7ff] px-4 py-3 text-sm font-medium text-[#6b5a88]">
+                  No pending backend tasks right now.
+                </p>
+              )}
             </div>
 
-            <button className="mt-8 w-full rounded-[18px] border-2 border-dashed border-[#e6d7f8] px-5 py-4 text-lg font-semibold text-[#9b8cb3] transition hover:border-[#d0baf3] hover:text-[#6d38de]">
-              + Add Task
+            <button className="mt-8 w-full rounded-[18px] border-2 border-dashed border-[#e6d7f8] px-5 py-4 text-lg font-semibold text-[#9b8cb3]" disabled>
+              Synced From Backend
             </button>
           </section>
 
@@ -392,7 +492,9 @@ export default function AssignmentsDashboard() {
             </div>
 
             <p className="mt-7 text-[1.02rem] leading-8 text-white/90">
-              &quot;Neural Networks&quot; research is due tomorrow. I recommend a 2-hour deep work session starting at 7:00 PM tonight to stay ahead.
+              {priorityAssignment
+                ? `"${priorityAssignment.title}" is due ${priorityAssignment.dueLabel.toLowerCase()}. I recommend a focused study block to stay ahead.`
+                : 'Once a teacher assigns classwork, I can turn the nearest deadline into a focused study plan.'}
             </p>
 
             <button className="mt-8 w-full rounded-[18px] bg-white px-5 py-4 text-base font-semibold uppercase tracking-[0.18em] text-[#5d34df] transition hover:bg-[#f7f2ff]">

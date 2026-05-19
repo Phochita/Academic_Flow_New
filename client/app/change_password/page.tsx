@@ -1,6 +1,9 @@
-import React, { Suspense } from 'react';
+'use client';
+
+import React, { FormEvent, Suspense, useMemo, useState } from 'react';
 import Sidebar from '@/components/layout/Sidebar';
 import DashboardShellHeader from '@/components/layout/DashboardShellHeader';
+import { buildSessionFromPayload, getApiBaseUrl, readAuthSession, saveAuthSession } from '@/lib/auth';
 
 const inter = { className: 'font-sans' };
 const manrope = { className: 'font-sans' };
@@ -64,11 +67,13 @@ function CircleCheckIcon() {
 function PasswordField({
   label,
   placeholder,
-  defaultValue,
+  value,
+  onChange,
 }: {
   label: string;
   placeholder?: string;
-  defaultValue?: string;
+  value: string;
+  onChange: (value: string) => void;
 }) {
   return (
     <label className="block">
@@ -80,7 +85,8 @@ function PasswordField({
       <div className="relative mt-2">
         <input
           type="password"
-          defaultValue={defaultValue}
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
           placeholder={placeholder}
           className={`${inter.className} h-11 w-full appearance-none rounded-[4px] border border-[#E5E7EB] bg-[#F8FAFC] px-3 pr-10 text-[13px] leading-5 font-normal text-[#1F2937] outline-none ring-0 placeholder:text-[#9CA3AF]`}
         />
@@ -92,7 +98,158 @@ function PasswordField({
   );
 }
 
+const getErrorMessage = (payload: unknown, fallback: string) => {
+  if (!payload || typeof payload !== 'object') {
+    return fallback;
+  }
+
+  const response = payload as {
+    error?: string;
+    issues?: Array<{ message?: string }>;
+  };
+
+  if (Array.isArray(response.issues) && response.issues.length > 0) {
+    return response.issues
+      .map((issue) => issue.message?.trim())
+      .filter(Boolean)
+      .join(' ');
+  }
+
+  return response.error?.trim() || fallback;
+};
+
+type AuthResponsePayload = {
+  message?: string;
+  session?: {
+    accessToken?: string | null;
+    expiresAt?: number | null;
+    refreshToken?: string | null;
+    tokenType?: string | null;
+  } | null;
+  user?: {
+    avatarUrl?: string | null;
+    email?: string | null;
+    fullName?: string | null;
+    id?: string | null;
+    isPro?: boolean | null;
+    role?: string | null;
+  } | null;
+};
+
 export default function ChangePasswordPage() {
+  const session = useMemo(() => readAuthSession(), []);
+  const apiBaseUrl = useMemo(() => getApiBaseUrl(), []);
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [errorMessage, setErrorMessage] = useState('');
+  const [successMessage, setSuccessMessage] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+
+    if (!session?.accessToken || !session.user.email) {
+      setSuccessMessage('');
+      setErrorMessage('Sign in again before changing your password.');
+      return;
+    }
+
+    if (!currentPassword) {
+      setSuccessMessage('');
+      setErrorMessage('Enter your current password.');
+      return;
+    }
+
+    if (newPassword.length < 8) {
+      setSuccessMessage('');
+      setErrorMessage('Your new password must be at least 8 characters long.');
+      return;
+    }
+
+    if (newPassword !== confirmPassword) {
+      setSuccessMessage('');
+      setErrorMessage('Your password confirmation does not match.');
+      return;
+    }
+
+    if (currentPassword === newPassword) {
+      setSuccessMessage('');
+      setErrorMessage('Choose a new password that is different from your current password.');
+      return;
+    }
+
+    setErrorMessage('');
+    setSuccessMessage('');
+    setIsSubmitting(true);
+
+    try {
+      const verifyResponse = await fetch(`${apiBaseUrl}/api/auth/login`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          email: session.user.email,
+          password: currentPassword,
+        }),
+      });
+      const verifyPayload = (await verifyResponse.json().catch(() => null)) as AuthResponsePayload | null;
+
+      if (!verifyResponse.ok) {
+        throw new Error(getErrorMessage(verifyPayload, 'Your current password is incorrect.'));
+      }
+
+      const updateResponse = await fetch(`${apiBaseUrl}/api/auth/reset-password`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${session.accessToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ password: newPassword }),
+      });
+      const updatePayload = (await updateResponse.json().catch(() => null)) as { message?: string } | null;
+
+      if (!updateResponse.ok) {
+        throw new Error(getErrorMessage(updatePayload, 'Unable to update your password right now.'));
+      }
+
+      const refreshResponse = await fetch(`${apiBaseUrl}/api/auth/login`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          email: session.user.email,
+          password: newPassword,
+        }),
+      });
+      const refreshPayload = (await refreshResponse.json().catch(() => null)) as AuthResponsePayload | null;
+
+      if (!refreshResponse.ok) {
+        throw new Error(getErrorMessage(refreshPayload, 'Password updated, but you need to sign in again.'));
+      }
+
+      const nextSession = buildSessionFromPayload(refreshPayload ?? {});
+
+      if (!nextSession) {
+        throw new Error('Password updated, but no usable session was returned. Please sign in again.');
+      }
+
+      saveAuthSession(nextSession);
+
+      setCurrentPassword('');
+      setNewPassword('');
+      setConfirmPassword('');
+      setSuccessMessage(updatePayload?.message?.trim() || 'Password updated successfully.');
+    } catch (error) {
+      setSuccessMessage('');
+      setErrorMessage(error instanceof Error ? error.message : 'Unable to update your password right now.');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-[#fcf7ff]">
       <Suspense fallback={null}>
@@ -114,16 +271,34 @@ export default function ChangePasswordPage() {
 
           <section className="grid w-full max-w-[944px] items-start gap-5 lg:grid-cols-[1fr_234px]">
             <div className="rounded-[8px] bg-white p-6 shadow-[0_1px_2px_rgba(15,23,42,0.06)]">
-              <form className="max-w-[332px] space-y-5">
-                <PasswordField label="Current Password" defaultValue="••••••••••••" />
-                <PasswordField label="New Password" placeholder="At least 12 characters" />
-                <PasswordField label="Confirm New Password" placeholder="Confirm your new password" />
+              <form className="max-w-[332px] space-y-5" onSubmit={handleSubmit}>
+                <PasswordField label="Current Password" value={currentPassword} onChange={setCurrentPassword} />
+                <PasswordField label="New Password" placeholder="At least 8 characters" value={newPassword} onChange={setNewPassword} />
+                <PasswordField
+                  label="Confirm New Password"
+                  placeholder="Confirm your new password"
+                  value={confirmPassword}
+                  onChange={setConfirmPassword}
+                />
+
+                {errorMessage ? (
+                  <p className="rounded-[8px] border border-red-200 bg-red-50 px-3 py-2 text-[12px] leading-5 text-red-700">
+                    {errorMessage}
+                  </p>
+                ) : null}
+
+                {successMessage ? (
+                  <p className="rounded-[8px] border border-emerald-200 bg-emerald-50 px-3 py-2 text-[12px] leading-5 text-emerald-700">
+                    {successMessage}
+                  </p>
+                ) : null}
 
                 <button
-                  type="button"
-                  className={`${inter.className} inline-flex h-11 min-w-[172px] items-center justify-center rounded-[8px] bg-gradient-to-r from-[#630ED4] to-[#7C3AED] px-6 text-[12px] leading-4 font-bold uppercase tracking-[0.8px] text-white shadow-[0_8px_20px_-8px_rgba(99,14,212,0.5)]`}
+                  type="submit"
+                  disabled={isSubmitting}
+                  className={`${inter.className} inline-flex h-11 min-w-[172px] items-center justify-center rounded-[8px] bg-gradient-to-r from-[#630ED4] to-[#7C3AED] px-6 text-[12px] leading-4 font-bold uppercase tracking-[0.8px] text-white shadow-[0_8px_20px_-8px_rgba(99,14,212,0.5)] disabled:cursor-not-allowed disabled:opacity-70`}
                 >
-                  Update Password
+                  {isSubmitting ? 'Updating...' : 'Update Password'}
                 </button>
               </form>
             </div>

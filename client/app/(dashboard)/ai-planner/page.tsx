@@ -1,6 +1,8 @@
 'use client';
 
-import { startTransition, useState } from 'react';
+import type { Dispatch, SetStateAction } from 'react';
+import { startTransition, useEffect, useMemo, useState } from 'react';
+import { buildAuthHeaders, getApiBaseUrl, getAuthRequestErrorMessage, readAuthSession, updateStoredAuthUser } from '@/lib/auth';
 
 type FlowMode = 'daily' | 'weekly';
 type FocusGoal = 'exam' | 'growth';
@@ -22,6 +24,63 @@ type QueueItem = {
   due: string;
   intensity: string;
   tone: 'urgent' | 'major';
+};
+
+type SubscriptionPlan = {
+  code: string;
+  durationDays: number;
+  features: string[];
+  name: string;
+  priceUsd: number;
+};
+
+type SubscriptionPayload = {
+  activeSubscription: {
+    endDate: string;
+    plan: string | null;
+    status: string;
+  } | null;
+  history: unknown[];
+  isPro: boolean;
+  plans: SubscriptionPlan[];
+  userId: string;
+};
+
+type AbaPaySandboxSession = {
+  amountUsd: number;
+  currency: string;
+  expiresAt: string;
+  merchantId: string;
+  merchantName: string;
+  paymentMethod: string;
+  plan: SubscriptionPlan;
+  provider: string;
+  reference: string;
+  status: string;
+};
+
+type AbaPaySandboxFields = {
+  payerName: string;
+  payerPhone: string;
+  sandboxAccount: string;
+};
+
+type GeneratedStudyPlan = {
+  focusAreas: string[];
+  milestones: {
+    detail: string;
+    title: string;
+  }[];
+  preferredSessionMinutes: number;
+  provider: string;
+  sessions: {
+    durationMinutes: number;
+    outcome: string;
+    session: number;
+    title: string;
+  }[];
+  summary: string;
+  weeklyHours: number;
 };
 
 const flowSchedule: Record<FlowMode, FlowItem[]> = {
@@ -120,6 +179,50 @@ const priorityQueues: QueueItem[] = [
   { label: 'Major', title: 'Compiler Design Project', due: 'Oct 24', intensity: 'Medium', tone: 'major' },
 ];
 
+const formatCurrency = (value: number) =>
+  new Intl.NumberFormat('en-US', {
+    currency: 'USD',
+    style: 'currency',
+  }).format(value);
+
+const formatDuration = (days: number) => {
+  if (days >= 365) {
+    return '12 months';
+  }
+
+  if (days >= 180) {
+    return '6 months';
+  }
+
+  return `${days} days`;
+};
+
+const formatBillingLabel = (days: number) => {
+  if (days >= 365) {
+    return 'per year';
+  }
+
+  if (days >= 180) {
+    return 'per semester';
+  }
+
+  return 'per month';
+};
+
+const normalizeSandboxDigits = (value: string, maxLength: number) => value.replace(/\D/g, '').slice(0, maxLength);
+
+const isAbaPaySandboxFormComplete = (fields: AbaPaySandboxFields) =>
+  fields.payerName.trim().length >= 2 &&
+  normalizeSandboxDigits(fields.payerPhone, 12).length >= 8 &&
+  fields.sandboxAccount.trim().length >= 4;
+
+const buildAbaPaySandboxReference = (abaPaySession: AbaPaySandboxSession, fields: AbaPaySandboxFields) => {
+  const phoneDigits = normalizeSandboxDigits(fields.payerPhone, 12);
+  const last4 = phoneDigits.slice(-4) || '0000';
+
+  return `${abaPaySession.reference}-ABA-SBX-${last4}`;
+};
+
 function PlannerSparkIcon() {
   return (
     <svg viewBox="0 0 24 24" className="h-5 w-5" fill="currentColor" aria-hidden="true">
@@ -204,6 +307,233 @@ function SummaryIcon({ kind }: { kind: 'study' | 'breaks' | 'prep' }) {
   );
 }
 
+function CheckIcon() {
+  return (
+    <div className="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-[#6d38de] text-white">
+      <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="2.4" aria-hidden="true">
+        <path d="m6.5 12 3.1 3.1 7.9-7.7" strokeLinecap="round" strokeLinejoin="round" />
+      </svg>
+    </div>
+  );
+}
+
+function SubscriptionGate({
+  abaPayFields,
+  setAbaPayFields,
+  errorMessage,
+  isLoading,
+  onCancelPayment,
+  onActivatePlan,
+  onConfirmPayment,
+  abaPaySession,
+  plans,
+  submittingPlan,
+}: {
+  abaPayFields: AbaPaySandboxFields;
+  errorMessage: string;
+  isLoading: boolean;
+  onCancelPayment: () => void;
+  onActivatePlan: (planCode: string) => void;
+  onConfirmPayment: () => void;
+  abaPaySession: AbaPaySandboxSession | null;
+  plans: SubscriptionPlan[];
+  setAbaPayFields: Dispatch<SetStateAction<AbaPaySandboxFields>>;
+  submittingPlan: string | null;
+}) {
+  return (
+    <div className="mx-auto max-w-[1120px] space-y-6">
+      <section className="overflow-hidden rounded-[30px] border border-[#eadcf7] bg-white shadow-[0_30px_46px_-40px_rgba(95,41,210,0.7)]">
+        <div className="grid gap-7 px-7 py-7 lg:grid-cols-[minmax(0,1.2fr)_320px] lg:px-8">
+          <div>
+            <span className="inline-flex rounded-full bg-[#efe3ff] px-4 py-1.5 text-[0.78rem] font-semibold uppercase tracking-[0.2em] text-[#6d38de]">
+              Student Pro Required
+            </span>
+            <h1 className="mt-5 text-[2.3rem] font-bold leading-[1] tracking-[-0.05em] text-[#2a1842] sm:text-[2.8rem]">
+              Unlock AI Planner
+            </h1>
+            <p className="mt-4 max-w-[680px] text-[0.98rem] leading-7 text-[#6b5a88]">
+              The AI-generated study plan is available only for users with an active Student Pro subscription.
+              Choose a plan to activate access.
+            </p>
+
+            {errorMessage ? (
+              <p className="mt-6 rounded-[18px] border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                {errorMessage}
+              </p>
+            ) : null}
+          </div>
+
+          <div className="rounded-[28px] bg-[linear-gradient(180deg,#6d38de_0%,#6c34df_42%,#5b28d3_100%)] p-7 text-white shadow-[0_30px_48px_-34px_rgba(95,41,210,0.95)]">
+            <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-white/15">
+              <PlannerSparkIcon />
+            </div>
+            <h2 className="mt-6 text-[1.65rem] font-bold tracking-[-0.04em]">What unlocks</h2>
+            <ul className="mt-4 space-y-3 text-sm leading-7 text-white/86">
+              <li>AI-generated study sessions</li>
+              <li>Priority focus areas</li>
+              <li>Milestones and weekly study load</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      {abaPaySession ? (
+        <section className="grid gap-6 rounded-[30px] border border-[#eadcf7] bg-white p-7 shadow-[0_30px_46px_-40px_rgba(95,41,210,0.7)] xl:grid-cols-[320px_minmax(0,1fr)]">
+          <div className="rounded-[28px] border border-[#eadcf7] bg-[#fffdfd] p-5">
+            <div className="rounded-[20px] border border-[#f0e7fb] bg-white p-6 text-center">
+              <div className="mx-auto grid h-20 w-20 place-items-center rounded-[24px] bg-[#efe3ff] text-[#6d38de]">
+                <svg viewBox="0 0 24 24" className="h-10 w-10" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+                  <rect x="5" y="3" width="14" height="18" rx="3" />
+                  <path d="M9 7h6M10 17h4" strokeLinecap="round" />
+                </svg>
+              </div>
+              <p className="mt-4 text-sm font-semibold uppercase tracking-[0.16em] text-[#6d38de]">ABA Pay Sandbox</p>
+              <p className="mt-2 text-sm leading-6 text-[#6b5a88]">Simulate an ABA Pay payment without using real banking credentials.</p>
+            </div>
+          </div>
+
+          <div>
+            <span className="inline-flex rounded-full bg-[#efe3ff] px-4 py-1.5 text-[0.78rem] font-semibold uppercase tracking-[0.18em] text-[#6d38de]">
+              Sandbox Payment
+            </span>
+            <h2 className="mt-4 text-[2rem] font-bold tracking-[-0.05em] text-[#2a1842]">{abaPaySession.plan.name}</h2>
+            <p className="mt-3 text-[1rem] leading-7 text-[#6b5a88]">
+              Simulate paying {formatCurrency(abaPaySession.amountUsd)} with ABA Pay sandbox to unlock AI Planner. Only a sandbox transaction reference is sent to the backend.
+            </p>
+
+            <div className="mt-6 grid gap-4 sm:grid-cols-2">
+              <div className="rounded-[20px] bg-[#faf6ff] p-4">
+                <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[#7c6d92]">Provider</p>
+                <p className="mt-2 text-sm font-semibold text-[#2a1842]">{abaPaySession.provider}</p>
+                <p className="mt-1 text-sm text-[#6b5a88]">{abaPaySession.merchantName}</p>
+              </div>
+              <div className="rounded-[20px] bg-[#faf6ff] p-4">
+                <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[#7c6d92]">Sandbox Reference</p>
+                <p className="mt-2 break-all text-sm font-semibold text-[#2a1842]">{abaPaySession.reference}</p>
+              </div>
+            </div>
+
+            <div className="mt-6 grid gap-4">
+              <label className="block">
+                <span className="text-sm font-semibold uppercase tracking-[0.16em] text-[#7c6d92]">Payer name</span>
+                <input
+                  type="text"
+                  value={abaPayFields.payerName}
+                  onChange={(event) => setAbaPayFields((current) => ({ ...current, payerName: event.target.value }))}
+                  placeholder="Sandbox payer name"
+                  className="mt-3 h-12 w-full rounded-[16px] border border-[#e4d8fb] bg-[#fcfaff] px-4 text-sm text-[#2a1842] outline-none focus:border-[#cdb5f7]"
+                />
+              </label>
+
+              <label className="block">
+                <span className="text-sm font-semibold uppercase tracking-[0.16em] text-[#7c6d92]">ABA sandbox phone</span>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  value={abaPayFields.payerPhone}
+                  onChange={(event) => setAbaPayFields((current) => ({ ...current, payerPhone: normalizeSandboxDigits(event.target.value, 12) }))}
+                  placeholder="012345678"
+                  className="mt-3 h-12 w-full rounded-[16px] border border-[#e4d8fb] bg-[#fcfaff] px-4 text-sm text-[#2a1842] outline-none focus:border-[#cdb5f7]"
+                />
+              </label>
+
+              <label className="block">
+                <span className="text-sm font-semibold uppercase tracking-[0.16em] text-[#7c6d92]">Sandbox account alias</span>
+                <input
+                  type="text"
+                  value={abaPayFields.sandboxAccount}
+                  onChange={(event) => setAbaPayFields((current) => ({ ...current, sandboxAccount: event.target.value }))}
+                  placeholder="student@aba-sandbox"
+                  className="mt-3 h-12 w-full rounded-[16px] border border-[#e4d8fb] bg-[#fcfaff] px-4 text-sm text-[#2a1842] outline-none focus:border-[#cdb5f7]"
+                />
+              </label>
+            </div>
+
+            <div className="mt-6 flex flex-wrap gap-3">
+              <button
+                type="button"
+                onClick={onConfirmPayment}
+                disabled={Boolean(submittingPlan) || !isAbaPaySandboxFormComplete(abaPayFields)}
+                className="rounded-[16px] bg-[linear-gradient(135deg,#6d38de_0%,#8d66ef_100%)] px-5 py-3 text-sm font-semibold text-white shadow-[0_22px_28px_-22px_rgba(109,56,222,0.95)] disabled:cursor-not-allowed disabled:opacity-70"
+              >
+                {submittingPlan ? 'Processing sandbox payment...' : 'Simulate ABA Pay'}
+              </button>
+              <button
+                type="button"
+                onClick={onCancelPayment}
+                className="rounded-[16px] border border-[#dbc8fa] px-5 py-3 text-sm font-semibold text-[#5a2ddf]"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </section>
+      ) : null}
+
+      <section className="space-y-4 text-center">
+        <h2 className="text-[2.2rem] font-bold tracking-[-0.04em] text-[#2a1842]">Available Student Pro Plans</h2>
+        {isLoading ? (
+          <div className="rounded-[28px] border border-[#eadcf7] bg-white px-7 py-10 text-sm font-semibold text-[#6d38de] shadow-[0_28px_46px_-40px_rgba(95,41,210,0.7)]">
+            Loading subscription plans...
+          </div>
+        ) : (
+          <div className="grid gap-5 pt-5 xl:grid-cols-3">
+            {plans.map((plan) => {
+              const isFeatured = plan.code === 'semester';
+
+              return (
+                <article
+                  key={plan.code}
+                  className={`rounded-[28px] border bg-white px-7 py-7 text-left shadow-[0_28px_46px_-40px_rgba(95,41,210,0.7)] ${
+                    isFeatured ? 'border-[#6d38de] shadow-[0_34px_54px_-38px_rgba(109,56,222,0.95)]' : 'border-[#eadcf7]'
+                  }`}
+                >
+                  <span
+                    className={`inline-flex rounded-full px-3 py-1.5 text-[0.72rem] font-semibold uppercase tracking-[0.16em] ${
+                      isFeatured ? 'bg-[#6d38de] text-white' : 'bg-[#efe3ff] text-[#6d38de]'
+                    }`}
+                  >
+                    {formatDuration(plan.durationDays)}
+                  </span>
+
+                  <h3 className="mt-5 text-[1.7rem] font-bold tracking-[-0.04em] text-[#2a1842]">{plan.name}</h3>
+
+                  <div className="mt-5 flex items-end gap-2">
+                    <span className="text-[2.8rem] font-bold tracking-[-0.05em] text-[#2a1842]">{formatCurrency(plan.priceUsd)}</span>
+                    <span className="pb-2 text-[1rem] text-[#6b5a88]">{formatBillingLabel(plan.durationDays)}</span>
+                  </div>
+
+                  <div className="mt-6 space-y-4">
+                    {plan.features.map((feature) => (
+                      <div key={`${plan.code}-${feature}`} className="flex items-center gap-3">
+                        <CheckIcon />
+                        <span className="text-[1rem] text-[#2a1842]">{feature}</span>
+                      </div>
+                    ))}
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => onActivatePlan(plan.code)}
+                    disabled={Boolean(submittingPlan)}
+                    className={`mt-10 w-full rounded-[16px] px-5 py-4 text-[1.02rem] font-semibold transition hover:translate-y-[-1px] disabled:cursor-not-allowed disabled:opacity-70 ${
+                      isFeatured
+                        ? 'bg-[linear-gradient(135deg,#6d38de_0%,#8d66ef_100%)] text-white shadow-[0_24px_30px_-24px_rgba(109,56,222,0.95)]'
+                        : 'bg-[#f2dfff] text-[#5d34df]'
+                    }`}
+                  >
+                    {submittingPlan === plan.code ? 'Activating plan...' : `Choose ${plan.name}`}
+                  </button>
+                </article>
+              );
+            })}
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
 function getFlowItemStyles(tone: FlowItem['tone']) {
   switch (tone) {
     case 'focus':
@@ -250,14 +580,240 @@ function getFlowItemStyles(tone: FlowItem['tone']) {
 }
 
 export default function AiPlannerPage() {
+  const apiBaseUrl = useMemo(() => getApiBaseUrl(), []);
   const [flowMode, setFlowMode] = useState<FlowMode>('daily');
   const [focusGoal, setFocusGoal] = useState<FocusGoal>('exam');
   const [studyIntensity, setStudyIntensity] = useState(50);
   const [prioritizeDifficult, setPrioritizeDifficult] = useState(true);
+  const [subscriptionData, setSubscriptionData] = useState<SubscriptionPayload | null>(null);
+  const [subscriptionError, setSubscriptionError] = useState('');
+  const [isSubscriptionLoading, setIsSubscriptionLoading] = useState(true);
+  const [submittingPlan, setSubmittingPlan] = useState<string | null>(null);
+  const [abaPaySession, setAbaPaySession] = useState<AbaPaySandboxSession | null>(null);
+  const [abaPayFields, setAbaPayFields] = useState<AbaPaySandboxFields>({
+    payerName: '',
+    payerPhone: '',
+    sandboxAccount: '',
+  });
+  const [generatedPlan, setGeneratedPlan] = useState<GeneratedStudyPlan | null>(null);
+  const [planError, setPlanError] = useState('');
+  const [isPlanLoading, setIsPlanLoading] = useState(false);
   const activeFlow = flowSchedule[flowMode];
+  const isPro = Boolean(subscriptionData?.isPro);
+
+  useEffect(() => {
+    let ignore = false;
+
+    const loadSubscriptionStatus = async () => {
+      const session = readAuthSession();
+
+      if (!session) {
+        if (!ignore) {
+          setSubscriptionError('Sign in again to load subscription plans.');
+          setIsSubscriptionLoading(false);
+        }
+        return;
+      }
+
+      try {
+        const response = await fetch(`${apiBaseUrl}/api/subscriptions`, {
+          headers: buildAuthHeaders(session.accessToken),
+        });
+        const payload = (await response.json().catch(() => null)) as (SubscriptionPayload & { error?: string }) | null;
+
+        if (!response.ok || !payload) {
+          throw new Error(payload?.error?.trim() || 'Unable to load subscription details right now.');
+        }
+
+        if (!ignore) {
+          setSubscriptionData(payload);
+          updateStoredAuthUser({ isPro: payload.isPro });
+          setSubscriptionError('');
+        }
+      } catch (error) {
+        if (!ignore) {
+          setSubscriptionError(getAuthRequestErrorMessage(error, 'Unable to load subscription details right now.'));
+        }
+      } finally {
+        if (!ignore) {
+          setIsSubscriptionLoading(false);
+        }
+      }
+    };
+
+    void loadSubscriptionStatus();
+
+    return () => {
+      ignore = true;
+    };
+  }, [apiBaseUrl]);
+
+  useEffect(() => {
+    let ignore = false;
+
+    const loadGeneratedPlan = async () => {
+      const session = readAuthSession();
+
+      if (!session || !isPro) {
+        return;
+      }
+
+      setIsPlanLoading(true);
+      setPlanError('');
+
+      try {
+        const response = await fetch(`${apiBaseUrl}/api/ai/study-plan`, {
+          method: 'POST',
+          headers: buildAuthHeaders(session.accessToken),
+          body: JSON.stringify({
+            goal: focusGoal === 'exam' ? 'exam preparation' : 'skill growth',
+            preferredSessionMinutes: studyIntensity >= 70 ? 120 : studyIntensity >= 40 ? 90 : 45,
+            weeklyHours: studyIntensity >= 70 ? 12 : studyIntensity >= 40 ? 8 : 4,
+            courses: prioritizeDifficult ? ['Algorithms', 'Machine Learning', 'Database Systems'] : ['Current courses'],
+            assignments: priorityQueues.map((item) => ({
+              title: item.title,
+              estimatedHours: item.tone === 'urgent' ? 3 : 6,
+            })),
+          }),
+        });
+        const payload = (await response.json().catch(() => null)) as { plan?: GeneratedStudyPlan; error?: string; message?: string } | null;
+
+        if (!response.ok || !payload?.plan) {
+          throw new Error(payload?.error?.trim() || payload?.message?.trim() || 'Unable to generate your AI study plan right now.');
+        }
+
+        if (!ignore) {
+          setGeneratedPlan(payload.plan);
+        }
+      } catch (error) {
+        if (!ignore) {
+          setPlanError(getAuthRequestErrorMessage(error, 'Unable to generate your AI study plan right now.'));
+        }
+      } finally {
+        if (!ignore) {
+          setIsPlanLoading(false);
+        }
+      }
+    };
+
+    void loadGeneratedPlan();
+
+    return () => {
+      ignore = true;
+    };
+  }, [apiBaseUrl, focusGoal, isPro, prioritizeDifficult, studyIntensity]);
+
+  const handleActivatePlan = async (planCode: string) => {
+    const session = readAuthSession();
+
+    if (!session) {
+      setSubscriptionError('Sign in again to create an ABA Pay sandbox session.');
+      return;
+    }
+
+    setSubmittingPlan(planCode);
+    setSubscriptionError('');
+
+    try {
+      const response = await fetch(`${apiBaseUrl}/api/subscriptions/aba-pay-sandbox-sessions`, {
+        method: 'POST',
+        headers: buildAuthHeaders(session.accessToken),
+        body: JSON.stringify({ plan: planCode }),
+      });
+      const payload = (await response.json().catch(() => null)) as { abaPaySession?: AbaPaySandboxSession; error?: string } | null;
+
+      if (!response.ok || !payload?.abaPaySession) {
+        throw new Error(payload?.error?.trim() || 'Unable to create ABA Pay sandbox session right now.');
+      }
+
+      setAbaPaySession(payload.abaPaySession);
+      setAbaPayFields({
+        payerName: '',
+        payerPhone: '',
+        sandboxAccount: '',
+      });
+    } catch (error) {
+      setSubscriptionError(getAuthRequestErrorMessage(error, 'Unable to create ABA Pay sandbox session right now.'));
+    } finally {
+      setSubmittingPlan(null);
+    }
+  };
+
+  const handleConfirmPayment = async () => {
+    const session = readAuthSession();
+
+    if (!session || !abaPaySession) {
+      setSubscriptionError('Create an ABA Pay sandbox session before confirming.');
+      return;
+    }
+
+    setSubmittingPlan(abaPaySession.plan.code);
+    setSubscriptionError('');
+    const providerTransactionId = buildAbaPaySandboxReference(abaPaySession, abaPayFields);
+
+    try {
+      const response = await fetch(`${apiBaseUrl}/api/subscriptions/payment-confirmations`, {
+        method: 'POST',
+        headers: buildAuthHeaders(session.accessToken),
+        body: JSON.stringify({
+          plan: abaPaySession.plan.code,
+          providerTransactionId,
+          reference: abaPaySession.reference,
+        }),
+      });
+      const payload = (await response.json().catch(() => null)) as (SubscriptionPayload & { error?: string }) | null;
+
+      if (!response.ok || !payload) {
+        throw new Error(payload?.error?.trim() || 'Unable to confirm this ABA Pay sandbox payment right now.');
+      }
+
+      setSubscriptionData(payload);
+      updateStoredAuthUser({ isPro: payload.isPro });
+      setAbaPaySession(null);
+      setAbaPayFields({
+        payerName: '',
+        payerPhone: '',
+        sandboxAccount: '',
+      });
+    } catch (error) {
+      setSubscriptionError(getAuthRequestErrorMessage(error, 'Unable to confirm this ABA Pay sandbox payment right now.'));
+    } finally {
+      setSubmittingPlan(null);
+    }
+  };
+
+  if (isSubscriptionLoading || !isPro) {
+    return (
+      <SubscriptionGate
+        errorMessage={subscriptionError}
+        isLoading={isSubscriptionLoading}
+        onCancelPayment={() => {
+          setAbaPaySession(null);
+          setAbaPayFields({
+            payerName: '',
+            payerPhone: '',
+            sandboxAccount: '',
+          });
+        }}
+        onActivatePlan={handleActivatePlan}
+        onConfirmPayment={handleConfirmPayment}
+        abaPayFields={abaPayFields}
+        abaPaySession={abaPaySession}
+        plans={subscriptionData?.plans ?? []}
+        setAbaPayFields={setAbaPayFields}
+        submittingPlan={submittingPlan}
+      />
+    );
+  }
 
   return (
     <div className="mx-auto max-w-[1120px] space-y-6">
+      {planError ? (
+        <p className="rounded-[18px] border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-700">
+          {planError}
+        </p>
+      ) : null}
+
       <div className="grid gap-6 xl:grid-cols-[300px_minmax(0,1fr)]">
         <div className="space-y-6">
           <div className="space-y-2">
@@ -462,6 +1018,72 @@ export default function AiPlannerPage() {
               </button>
             </div>
           </div>
+
+          <section className="rounded-[30px] border border-[#eadcf7] bg-white p-7 shadow-[0_30px_46px_-40px_rgba(95,41,210,0.7)]">
+            <div className="flex flex-wrap items-start justify-between gap-4">
+              <div>
+                <span className="inline-flex rounded-full bg-[#efe3ff] px-3.5 py-1.5 text-[0.72rem] font-semibold uppercase tracking-[0.18em] text-[#6d38de]">
+                  Student Pro
+                </span>
+                <h2 className="mt-4 text-[1.9rem] font-bold tracking-[-0.05em] text-[#2a1842]">Generated AI Study Plan</h2>
+                <p className="mt-2 max-w-2xl text-[0.96rem] leading-7 text-[#6b5a88]">
+                  {isPlanLoading
+                    ? 'Generating your personalized study plan...'
+                    : generatedPlan?.summary ?? 'Your AI-generated plan will appear here.'}
+                </p>
+              </div>
+
+              <div className="rounded-[18px] bg-[#f5ecff] px-5 py-4 text-right">
+                <p className="text-[0.72rem] font-semibold uppercase tracking-[0.16em] text-[#7c6d92]">Weekly Load</p>
+                <p className="mt-1 text-[1.5rem] font-bold tracking-[-0.05em] text-[#5d34df]">
+                  {generatedPlan ? `${generatedPlan.weeklyHours}h` : '--'}
+                </p>
+              </div>
+            </div>
+
+            {generatedPlan ? (
+              <div className="mt-7 grid gap-5 xl:grid-cols-[minmax(0,1fr)_260px]">
+                <div className="space-y-3">
+                  {generatedPlan.sessions.slice(0, 4).map((session) => (
+                    <article key={session.session} className="rounded-[22px] border border-[#f0e5fb] bg-[#fcfaff] px-5 py-4">
+                      <div className="flex flex-wrap items-start justify-between gap-4">
+                        <div>
+                          <p className="text-[0.72rem] font-semibold uppercase tracking-[0.16em] text-[#7c6d92]">
+                            Session {session.session} / {session.durationMinutes} min
+                          </p>
+                          <h3 className="mt-2 text-[1.15rem] font-bold tracking-[-0.03em] text-[#2a1842]">{session.title}</h3>
+                          <p className="mt-1 text-sm leading-6 text-[#6b5a88]">{session.outcome}</p>
+                        </div>
+                      </div>
+                    </article>
+                  ))}
+                </div>
+
+                <div className="space-y-4">
+                  <div className="rounded-[22px] bg-[#f4e8ff] p-5">
+                    <p className="text-sm font-semibold uppercase tracking-[0.16em] text-[#5f4a79]">Focus Areas</p>
+                    <ul className="mt-4 space-y-3 text-sm leading-6 text-[#2a1842]">
+                      {generatedPlan.focusAreas.slice(0, 3).map((item) => (
+                        <li key={item}>{item}</li>
+                      ))}
+                    </ul>
+                  </div>
+
+                  <div className="rounded-[22px] bg-[#f4e8ff] p-5">
+                    <p className="text-sm font-semibold uppercase tracking-[0.16em] text-[#5f4a79]">Milestones</p>
+                    <div className="mt-4 space-y-3">
+                      {generatedPlan.milestones.slice(0, 2).map((milestone) => (
+                        <div key={milestone.title}>
+                          <p className="text-sm font-semibold text-[#2a1842]">{milestone.title}</p>
+                          <p className="mt-1 text-sm leading-6 text-[#6b5a88]">{milestone.detail}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ) : null}
+          </section>
 
           <section className="overflow-hidden rounded-[34px] border border-[#eadcf7] bg-white shadow-[0_30px_46px_-40px_rgba(95,41,210,0.7)]">
             <div className="flex flex-wrap items-center justify-between gap-5 border-b border-[#f0e5fb] px-7 py-7">

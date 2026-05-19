@@ -30,6 +30,7 @@ const createCourseSchema = z.object({
   lecturerId: z.string().uuid().nullish(),
   name: z.string().trim().min(3).max(140),
   room: z.string().trim().max(120).nullish(),
+  schedule: z.string().trim().max(500).nullish(),
   section: z.string().trim().max(120).nullish(),
   subject: z.string().trim().max(120).nullish(),
 });
@@ -41,6 +42,7 @@ const updateCourseSchema = z
     lecturerId: z.string().uuid().nullable().optional(),
     name: z.string().trim().min(3).max(140).optional(),
     room: z.string().trim().max(120).nullable().optional(),
+    schedule: z.string().trim().max(500).nullable().optional(),
     section: z.string().trim().max(120).nullable().optional(),
     subject: z.string().trim().max(120).nullable().optional(),
   })
@@ -48,9 +50,14 @@ const updateCourseSchema = z
     message: "At least one field must be provided.",
   });
 
-const enrollStudentSchema = z.object({
-  studentId: z.string().uuid(),
-});
+const enrollStudentSchema = z
+  .object({
+    studentEmail: z.email().trim().max(320).optional(),
+    studentId: z.string().uuid().optional(),
+  })
+  .refine((value) => Boolean(value.studentId || value.studentEmail), {
+    message: "Provide a student id or student email.",
+  });
 
 const createMaterialSchema = z.object({
   title: z.string().trim().min(3).max(160),
@@ -88,6 +95,7 @@ const serializeCourse = (row: {
   lecturerId: row.course.lecturerId,
   name: row.course.name,
   room: row.course.room,
+  schedule: row.course.schedule,
   section: row.course.section,
   subject: row.course.subject,
 });
@@ -157,7 +165,7 @@ const listCourses = async (req: expressTypes.Request, res: expressTypes.Response
   let rows: Array<{ course: typeof courses.$inferSelect; lecturer: typeof profiles.$inferSelect | null }>;
 
   if (req.auth.role === "student") {
-    const conditions: any[] = [eq(enrollments.studentId, req.auth.userId)];
+    const conditions: any[] = [eq(enrollments.studentId, req.auth.userId), eq(enrollments.status, "active")];
 
     if (searchCondition) {
       conditions.push(searchCondition);
@@ -283,6 +291,7 @@ const createCourse = async (req: expressTypes.Request, res: expressTypes.Respons
       lecturerId,
       name: payload.name,
       room: payload.room ?? null,
+      schedule: payload.schedule ?? null,
       section: payload.section ?? null,
       subject: payload.subject ?? null,
     })
@@ -338,6 +347,7 @@ const updateCourse = async (req: expressTypes.Request, res: expressTypes.Respons
       lecturerId: payload.lecturerId,
       name: payload.name,
       room: payload.room,
+      schedule: payload.schedule,
       section: payload.section,
       subject: payload.subject,
     })
@@ -361,7 +371,9 @@ const listCourseStudents = async (req: expressTypes.Request, res: expressTypes.R
 
   res.status(200).json({
     students: students.map((row) => ({
+      confirmedAt: row.confirmedAt,
       email: row.student.email,
+      enrollmentStatus: row.status,
       enrolledAt: row.enrolledAt,
       fullName: row.student.fullName,
       id: row.student.id,
@@ -376,7 +388,13 @@ const enrollStudent = async (req: expressTypes.Request, res: expressTypes.Respon
 
   await ensureCourseAccess(courseId, req.auth, { requireManager: true });
 
-  const studentProfile = await getProfileById(payload.studentId);
+  const studentProfile = payload.studentId
+    ? await getProfileById(payload.studentId)
+    : (await db
+        .select()
+        .from(profiles)
+        .where(eq(profiles.email, payload.studentEmail ?? ""))
+        .limit(1))[0] ?? null;
 
   if (!studentProfile) {
     throw new HttpError(404, "Student profile not found.");
@@ -389,17 +407,88 @@ const enrollStudent = async (req: expressTypes.Request, res: expressTypes.Respon
   const [createdEnrollment] = await db
     .insert(enrollments)
     .values({
+      confirmedAt: null,
       courseId,
-      studentId: payload.studentId,
+      studentId: studentProfile.id,
+      status: "pending",
     })
-    .onConflictDoNothing({
+    .onConflictDoUpdate({
+      set: {
+        confirmedAt: null,
+        status: "pending",
+      },
       target: [enrollments.courseId, enrollments.studentId],
     })
     .returning();
 
-  res.status(createdEnrollment ? 201 : 200).json({
+  res.status(201).json({
     enrollment: createdEnrollment ?? null,
-    message: createdEnrollment ? "Student enrolled successfully." : "Student is already enrolled in this course.",
+    student: {
+      email: studentProfile.email,
+      fullName: studentProfile.fullName,
+      id: studentProfile.id,
+    },
+    message: "Class invitation sent. The student must confirm it from their account before joining the course.",
+  });
+};
+
+const listMyCourseInvitations = async (req: expressTypes.Request, res: expressTypes.Response) => {
+  if (!req.auth) {
+    throw new HttpError(401, "Authentication is required.");
+  }
+
+  if (req.auth.role !== "student") {
+    throw new HttpError(403, "Only students can confirm class invitations.");
+  }
+
+  const invitationRows = await db
+    .select({
+      course: courses,
+      enrollment: enrollments,
+      lecturer: profiles,
+    })
+    .from(enrollments)
+    .innerJoin(courses, eq(enrollments.courseId, courses.id))
+    .leftJoin(profiles, eq(courses.lecturerId, profiles.id))
+    .where(and(eq(enrollments.studentId, req.auth.userId), eq(enrollments.status, "pending")))
+    .orderBy(desc(enrollments.enrolledAt));
+
+  res.status(200).json({
+    invitations: invitationRows.map((row) => ({
+      course: serializeCourse({ course: row.course, lecturer: row.lecturer }),
+      enrollmentId: row.enrollment.id,
+      invitedAt: row.enrollment.enrolledAt,
+      status: row.enrollment.status,
+    })),
+  });
+};
+
+const confirmCourseInvitation = async (req: expressTypes.Request, res: expressTypes.Response) => {
+  if (!req.auth) {
+    throw new HttpError(401, "Authentication is required.");
+  }
+
+  if (req.auth.role !== "student") {
+    throw new HttpError(403, "Only students can confirm class invitations.");
+  }
+
+  const { courseId } = courseIdParamsSchema.parse(req.params);
+  const [confirmedEnrollment] = await db
+    .update(enrollments)
+    .set({
+      confirmedAt: new Date(),
+      status: "active",
+    })
+    .where(and(eq(enrollments.courseId, courseId), eq(enrollments.studentId, req.auth.userId), eq(enrollments.status, "pending")))
+    .returning();
+
+  if (!confirmedEnrollment) {
+    throw new HttpError(404, "Pending class invitation not found.");
+  }
+
+  res.status(200).json({
+    enrollment: confirmedEnrollment,
+    message: "Class invitation confirmed successfully.",
   });
 };
 
@@ -446,10 +535,12 @@ const createCourseMaterial = async (req: expressTypes.Request, res: expressTypes
 };
 
 export = {
+  confirmCourseInvitation,
   createCourseMaterial,
   createCourse,
   enrollStudent,
   getCourse,
+  listMyCourseInvitations,
   listCourseMaterials,
   listCourses,
   listCourseStudents,

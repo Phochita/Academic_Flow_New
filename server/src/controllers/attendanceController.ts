@@ -1,5 +1,6 @@
 import drizzleOrm = require("drizzle-orm");
 import expressTypes = require("express");
+import pgCore = require("drizzle-orm/pg-core");
 import zod = require("zod");
 import dbModule = require("../db");
 import schema = require("../db/schema");
@@ -7,11 +8,14 @@ import courseService = require("../services/course");
 import httpUtils = require("../utils/http");
 
 const { and, asc, desc, eq, gte, inArray, lte } = drizzleOrm;
+const { alias } = pgCore;
 const { z } = zod;
 const { db } = dbModule;
 const { attendance, courses, enrollments, profiles } = schema;
 const { ensureCourseAccess } = courseService;
 const { HttpError } = httpUtils;
+
+const attendanceMarkers = alias(profiles, "attendance_markers");
 
 type AttendanceFilters = {
   courseId?: number | undefined;
@@ -60,12 +64,14 @@ const fetchAttendanceRows = async (
   const baseQuery = db
     .select({
       course: courses,
+      marker: attendanceMarkers,
       record: attendance,
       student: profiles,
     })
     .from(attendance)
     .innerJoin(courses, eq(attendance.courseId, courses.id))
-    .innerJoin(profiles, eq(attendance.studentId, profiles.id));
+    .innerJoin(profiles, eq(attendance.studentId, profiles.id))
+    .leftJoin(attendanceMarkers, eq(attendance.markedBy, attendanceMarkers.id));
 
   if (auth.role === "student") {
     conditions.push(eq(attendance.studentId, auth.userId));
@@ -119,6 +125,13 @@ const listAttendance = async (req: expressTypes.Request, res: expressTypes.Respo
       id: row.record.id,
       markedAt: row.record.markedAt,
       markedBy: row.record.markedBy,
+      markedByUser: row.marker
+        ? {
+            email: row.marker.email,
+            fullName: row.marker.fullName,
+            id: row.marker.id,
+          }
+        : null,
       status: row.record.status,
       student: {
         email: row.student.email,
@@ -198,7 +211,7 @@ const markAttendance = async (req: expressTypes.Request, res: expressTypes.Respo
   const enrolledStudents = await db
     .select({ studentId: enrollments.studentId })
     .from(enrollments)
-    .where(and(eq(enrollments.courseId, payload.courseId), inArray(enrollments.studentId, studentIds)));
+    .where(and(eq(enrollments.courseId, payload.courseId), eq(enrollments.status, "active"), inArray(enrollments.studentId, studentIds)));
 
   if (enrolledStudents.length !== studentIds.length) {
     throw new HttpError(400, "Attendance can only be recorded for enrolled students.");
@@ -234,7 +247,21 @@ const markAttendance = async (req: expressTypes.Request, res: expressTypes.Respo
   res.status(200).json({
     attendance: rows.map((row) => ({
       attendanceDate: row.record.attendanceDate,
+      course: {
+        code: row.course.code,
+        id: row.course.id,
+        name: row.course.name,
+      },
       id: row.record.id,
+      markedAt: row.record.markedAt,
+      markedBy: row.record.markedBy,
+      markedByUser: row.marker
+        ? {
+            email: row.marker.email,
+            fullName: row.marker.fullName,
+            id: row.marker.id,
+          }
+        : null,
       status: row.record.status,
       student: {
         fullName: row.student.fullName,

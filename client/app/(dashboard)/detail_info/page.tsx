@@ -1,4 +1,8 @@
-import Image from 'next/image';
+'use client';
+
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { readAuthSession, updateStoredAuthUser } from '@/lib/auth';
+import { fetchMyProfile, type UserProfile } from '@/lib/profile';
 type InfoField = {
   label: string;
   value: string;
@@ -16,16 +20,59 @@ const fallbackFontFamily = 'Arial, Helvetica, sans-serif';
 const inter = { className: 'font-sans', style: { fontFamily: fallbackFontFamily } };
 const manrope = { className: 'font-sans', style: { fontFamily: fallbackFontFamily } };
 
-const identityFields: InfoField[] = [
-  { label: 'USER_ID', value: 'User_id' },
-  { label: 'DEPARTMENT', value: 'Software Engineering' },
-  { label: 'BATCH', value: '13' },
+const emptyValue = 'Not set yet';
+
+const formatValue = (value?: string | number | null) => {
+  if (value === null || value === undefined || String(value).trim().length === 0) {
+    return emptyValue;
+  }
+
+  return String(value);
+};
+
+const formatRole = (role?: UserProfile['role'] | null) => {
+  if (!role) {
+    return emptyValue;
+  }
+
+  return role.charAt(0).toUpperCase() + role.slice(1);
+};
+
+const formatStatus = (status?: UserProfile['status'] | null) => {
+  if (!status) {
+    return emptyValue;
+  }
+
+  return status
+    .split('_')
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ');
+};
+
+const formatDate = (value?: string | null) => {
+  if (!value) {
+    return emptyValue;
+  }
+
+  return new Date(value).toLocaleDateString('en-US', {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+  });
+};
+
+const buildIdentityFields = (profile: UserProfile | null): InfoField[] => [
+  { label: 'USER_ID', value: profile?.id ?? emptyValue },
+  { label: 'ROLE', value: formatRole(profile?.role) },
+  { label: 'STATUS', value: formatStatus(profile?.status) },
+  { label: 'DEPARTMENT', value: formatValue(profile?.department) },
+  { label: 'BATCH', value: formatValue(profile?.batch) },
 ];
 
-const contactFields: InfoField[] = [
-  { label: 'ACADEMIC EMAIL', value: 'example@kit.edu.kh' },
-  { label: 'PHONE NUMBER', value: '+855 123456879' },
-  { label: 'ADDRESS', value: 'Home no, Street no, village, district, Phnom Penh' },
+const buildContactFields = (profile: UserProfile | null): InfoField[] => [
+  { label: 'ACADEMIC EMAIL', value: formatValue(profile?.email) },
+  { label: 'PHONE NUMBER', value: formatValue(profile?.phoneNumber) },
+  { label: 'ADDRESS', value: formatValue(profile?.address) },
 ];
 
 const academicMilestones: Milestone[] = [
@@ -61,11 +108,11 @@ function ProfilePhoto({ imageUrl }: { imageUrl?: string | null }) {
     return (
       <div className="flex h-[80px] w-[80px] items-center justify-center">
         <div className="flex h-full w-full shrink-0 items-center justify-center overflow-hidden rounded-[30px] border-4 border-white bg-[#e4e6eb] shadow-[0_4px_12px_rgba(95,41,210,0.15)] relative">
-          <Image 
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
             src={normalized}
-            alt="User Avatar"
-            fill
-            className="object-cover"
+            alt="User avatar"
+            className="h-full w-full object-cover"
           />
         </div>
       </div>
@@ -126,7 +173,7 @@ function DataCard({
   fields,
 }: {
   title: string;
-  icon: React.ReactNode;
+  icon: ReactNode;
   fields: InfoField[];
 }) {
   return (
@@ -150,7 +197,86 @@ function DataCard({
 }
 
 export default function DetailInformationPage() {
-  const userProfileImage: string | null = null; 
+  const session = useMemo(() => readAuthSession(), []);
+  const [errorMessage, setErrorMessage] = useState('');
+  const [isLoading, setIsLoading] = useState(true);
+  const [profile, setProfile] = useState<UserProfile | null>(null);
+
+  useEffect(() => {
+    let ignore = false;
+
+    const loadProfile = async () => {
+      if (!session) {
+        if (!ignore) {
+          setErrorMessage('Sign in again to load your detail information.');
+          setIsLoading(false);
+        }
+        return;
+      }
+
+      try {
+        const nextProfile = await fetchMyProfile(session.accessToken);
+
+        if (!ignore) {
+          setProfile(nextProfile);
+          setErrorMessage('');
+          updateStoredAuthUser({
+            avatarUrl: nextProfile.avatarUrl,
+            email: nextProfile.email,
+            fullName: nextProfile.fullName,
+            id: nextProfile.id,
+            isPro: nextProfile.isPro,
+            role: nextProfile.role,
+          });
+        }
+      } catch (error) {
+        if (!ignore) {
+          setErrorMessage(error instanceof Error ? error.message : 'Unable to load your detail information right now.');
+        }
+      } finally {
+        if (!ignore) {
+          setIsLoading(false);
+        }
+      }
+    };
+
+    void loadProfile();
+
+    return () => {
+      ignore = true;
+    };
+  }, [session]);
+
+  const identityFields = useMemo(() => buildIdentityFields(profile), [profile]);
+  const contactFields = useMemo(() => buildContactFields(profile), [profile]);
+  const profileName = profile?.fullName ?? session?.user.fullName ?? (isLoading ? 'Loading...' : emptyValue);
+  const department = profile?.department ?? (isLoading ? 'Loading...' : emptyValue);
+  const classYear = profile?.classYear ? `Class of ${profile.classYear}` : isLoading ? 'Loading...' : 'Class year not set';
+  const currentGpa = profile?.currentGpa !== null && profile?.currentGpa !== undefined ? profile.currentGpa.toFixed(2) : '--';
+  const earnedCredits = profile?.earnedCredits !== null && profile?.earnedCredits !== undefined ? String(profile.earnedCredits) : '--';
+  const lastSeenLabel = formatDate(profile?.lastSeenAt);
+  const profileMilestones = useMemo<Milestone[]>(
+    () =>
+      profile
+        ? [
+            {
+              title: 'Profile Record',
+              description: profile.academicBio || 'Add an academic bio from Edit Profile to show a richer record here.',
+              dates: `Created ${formatDate(profile.createdAt)}`,
+              status: 'Completed',
+              tone: 'complete',
+            },
+            {
+              title: 'Academic Standing',
+              description: `Department: ${formatValue(profile.department)}. Batch: ${formatValue(profile.batch)}. Class year: ${formatValue(profile.classYear)}.`,
+              dates: `Last updated ${formatDate(profile.lastSeenAt)}`,
+              status: 'In Progress',
+              tone: 'active',
+            },
+          ]
+        : academicMilestones,
+    [profile],
+  );
 
   return (
     <div className={`${inter.className} mx-auto w-full max-w-[1280px] bg-[#F8F9FB]`}>
@@ -170,16 +296,22 @@ export default function DetailInformationPage() {
           </p>
         </header>
 
+        {errorMessage ? (
+          <p className="mt-6 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+            {errorMessage}
+          </p>
+        ) : null}
+
         <div className="mt-8 grid gap-6 grid-cols-3 grid-rows-[auto_auto] items-stretch">
             <aside className="col-start-1 col-span-1 row-start-1 flex flex-col rounded-xl bg-white p-8 shadow-[0_4px_20px_-4px_rgba(0,0,0,0.05)] border border-gray-100 justify-start items-center">
-              <ProfilePhoto imageUrl={userProfileImage} />
+              <ProfilePhoto imageUrl={profile?.avatarUrl ?? session?.user.avatarUrl} />
             <div className="flex flex-col items-center">
-              <p className={`${inter.className} mt-5 font-bold text-[#111827]`} style={{fontSize: '22px'}}>Username</p>
+              <p className={`${inter.className} mt-5 font-bold text-[#111827]`} style={{fontSize: '22px'}}>{profileName}</p>
               <p className={`${inter.className} mt-1.5 font-medium text-[#630ED4]`} style={{fontSize:'15px'}}>
-                Software Engineering
+                {department}
               </p>
               <span className={`${inter.className} border border-[#E5E7EB] mt-3 inline-flex items-center justify-center rounded-[6px] bg-[#F3F4F6] px-3 py-1.5 text-[11px] font-bold uppercase tracking-[0.08em] text-[#6B7280]`} style={{borderRadius:'6px', backgroundColor:'#F3F4F6'}}>
-                Class of 2025
+                {classYear}
               </span>
             </div>
 
@@ -193,7 +325,7 @@ export default function DetailInformationPage() {
                   Current GPA
                 </p>
                 <p className={`${inter.className} mt-2 text-[36px] font-extrabold tracking-[-0.02em] text-[#111827]`} style={{lineHeight: 1}}>
-                  3.92
+                  {currentGpa}
                 </p>
               </div>
               <div className="text-center">
@@ -201,7 +333,7 @@ export default function DetailInformationPage() {
                   Credits
                 </p>
                 <p className={`${inter.className} mt-2 text-[36px] font-extrabold tracking-[-0.02em] text-[#111827]`} style={{lineHeight: 1}}>
-                  114
+                  {earnedCredits}
                 </p>
               </div>
             </div>
@@ -237,7 +369,7 @@ export default function DetailInformationPage() {
               </div>
 
               <div className="space-y-0">
-                {academicMilestones.map((milestone, index) => (
+                {profileMilestones.map((milestone, index) => (
                   <article key={milestone.title} className="relative flex gap-6">
                     <div className="relative z-10 flex w-[24px] shrink-0 self-stretch justify-center pt-0.5" aria-hidden="true">
                       <div
@@ -247,7 +379,7 @@ export default function DetailInformationPage() {
                             : 'border-[4px] border-[#CBD5E1]'
                         }`}
                       />
-                      {index < academicMilestones.length - 1 && (
+                      {index < profileMilestones.length - 1 && (
                         <div className="absolute top-[28px] -bottom-[2px] w-[2px] bg-[#E5E7EB] z-10" />
                       )}
                     </div>
@@ -296,7 +428,7 @@ export default function DetailInformationPage() {
                 className="grid h-12 w-12 shrink-0 place-items-center rounded-[10px]"
                 style={{ backgroundColor: 'rgba(255,255,255,0.2)' }}
               >
-                <svg viewBox="0 0 24 24" className="h-6 w-6 text-white" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9.2 12.3 1.9 1.9 3.8-3.8"/></svg>
+                <ShieldIcon />
               </span>
               <div>
                 <p className={`${inter.className} text-[18px] font-bold text-white leading-tight`}>
@@ -306,7 +438,7 @@ export default function DetailInformationPage() {
                   className={`${inter.className} mt-1.5 max-w-xl text-[14px] font-medium`}
                   style={{ color: 'rgba(255,255,255,0.85)' }}
                 >
-                  Your profile is currently verified by the Office of the Registrar. Any changes to core data require formal submission.
+                  Your profile is synced from the backend. Last profile touchpoint: {lastSeenLabel}.
                 </p>
               </div>
             </div>

@@ -31,7 +31,7 @@ const isStudentEnrolled = async (courseId: number, studentId: string) => {
   const [enrollmentRecord] = await db
     .select({ id: enrollments.id })
     .from(enrollments)
-    .where(and(eq(enrollments.courseId, courseId), eq(enrollments.studentId, studentId)))
+    .where(and(eq(enrollments.courseId, courseId), eq(enrollments.studentId, studentId), eq(enrollments.status, "active")))
     .limit(1);
 
   return Boolean(enrollmentRecord);
@@ -91,7 +91,9 @@ const getCourseStudents = async (courseId: number) =>
   db
     .select({
       enrollmentId: enrollments.id,
+      status: enrollments.status,
       enrolledAt: enrollments.enrolledAt,
+      confirmedAt: enrollments.confirmedAt,
       student: profiles,
     })
     .from(enrollments)

@@ -1,8 +1,10 @@
 'use client';
 
-import { startTransition, useState } from 'react';
+import { startTransition, useEffect, useMemo, useState } from 'react';
+import { buildAuthHeaders, getApiBaseUrl, getAuthRequestErrorMessage, readAuthSession } from '@/lib/auth';
+import { fetchMyProfile, type UserProfile } from '@/lib/profile';
 
-type TrajectoryMode = 'gpa' | 'scores';
+type TrajectoryMode = 'gpa' | 'attendance';
 
 type TrajectoryPoint = {
   label: string;
@@ -10,36 +12,35 @@ type TrajectoryPoint = {
   displayValue: string;
 };
 
-type DisciplineStat = {
-  name: string;
-  level: string;
-  progress: number;
-  tone: string;
+type ApiAttendanceSummary = {
+  absent: number;
+  attendancePercentage: number;
+  courseCode: string;
+  courseId: number;
+  courseName: string;
+  present: number;
+  total: number;
 };
 
-const trajectorySeries: Record<TrajectoryMode, TrajectoryPoint[]> = {
-  gpa: [
-    { label: 'Sep', value: 64, displayValue: '3.11' },
-    { label: 'Oct', value: 78, displayValue: '3.34' },
-    { label: 'Nov', value: 85, displayValue: '3.51' },
-    { label: 'Dec', value: 93, displayValue: '3.68' },
-    { label: 'Jan', value: 98, displayValue: '3.82' },
-  ],
-  scores: [
-    { label: 'Sep', value: 72, displayValue: '82' },
-    { label: 'Oct', value: 79, displayValue: '86' },
-    { label: 'Nov', value: 87, displayValue: '89' },
-    { label: 'Dec', value: 91, displayValue: '92' },
-    { label: 'Jan', value: 95, displayValue: '94' },
-  ],
+type PerformanceAnalysis = {
+  band: string;
+  improvements: string[];
+  performanceScore: number;
+  provider: string;
+  recommendation: string;
+  strengths: string[];
+  summary: string;
 };
 
-const disciplineStats: DisciplineStat[] = [
-  { name: 'Computer Science', level: 'Mastery (98%)', progress: 98, tone: 'bg-[#6d38de]' },
-  { name: 'Mathematics', level: 'Advanced (92%)', progress: 92, tone: 'bg-[#6d38de]' },
-  { name: 'Biology', level: 'Proficient (84%)', progress: 84, tone: 'bg-[#6d38de]' },
-  { name: 'Literature', level: 'Developing (68%)', progress: 68, tone: 'bg-[#c9bddb]' },
-];
+type PerformanceData = {
+  analysis: PerformanceAnalysis | null;
+  attendanceSummary: ApiAttendanceSummary[];
+  errorMessage: string;
+  isLoading: boolean;
+  profile: UserProfile | null;
+};
+
+const courseTones = ['bg-[#6d38de]', 'bg-[#4f46e5]', 'bg-[#b83267]', 'bg-[#8b5cf6]'];
 
 function StarIcon() {
   return (
@@ -49,45 +50,204 @@ function StarIcon() {
   );
 }
 
+const calculateAttendance = (summary: ApiAttendanceSummary[]) => {
+  const total = summary.reduce((sum, item) => sum + item.total, 0);
+  const present = summary.reduce((sum, item) => sum + item.present, 0);
+
+  return total > 0 ? Math.round((present / total) * 100) : 0;
+};
+
+const buildTrajectorySeries = (mode: TrajectoryMode, currentGpa: number | null, attendancePercentage: number): TrajectoryPoint[] => {
+  const currentValue = mode === 'gpa' ? Math.round(((currentGpa ?? 0) / 4) * 100) : attendancePercentage;
+  const currentDisplay = mode === 'gpa' ? (currentGpa === null ? '--' : currentGpa.toFixed(2)) : `${attendancePercentage}%`;
+  const labels = ['Start', 'Checkpoint', 'Current'];
+
+  return labels.map((label, index) => {
+    if (index === labels.length - 1) {
+      return { label, value: currentValue, displayValue: currentDisplay };
+    }
+
+    const drift = mode === 'gpa' ? 10 - index * 4 : 8 - index * 3;
+    const value = Math.max(8, Math.min(100, currentValue - drift));
+    const displayValue =
+      mode === 'gpa'
+        ? currentGpa === null
+          ? '--'
+          : ((value / 100) * 4).toFixed(2)
+        : `${value}%`;
+
+    return { label, value, displayValue };
+  });
+};
+
+const requestPerformanceAnalysis = async (
+  accessToken: string,
+  currentGpa: number | null,
+  earnedCredits: number | null,
+  attendancePercentage: number,
+  attendanceSummary: ApiAttendanceSummary[],
+) => {
+  const response = await fetch(`${getApiBaseUrl()}/api/ai/performance-analysis`, {
+    method: 'POST',
+    headers: buildAuthHeaders(accessToken),
+    body: JSON.stringify({
+      attendancePercentage,
+      currentGpa,
+      earnedCredits,
+      courses: attendanceSummary.map((course) => ({
+        attendancePercentage: course.attendancePercentage,
+        courseName: course.courseName,
+        totalRecords: course.total,
+      })),
+    }),
+  });
+  const payload = (await response.json().catch(() => null)) as { analysis?: PerformanceAnalysis; message?: string } | null;
+
+  if (!response.ok || !payload?.analysis) {
+    throw new Error(payload?.message || 'Unable to analyze performance right now.');
+  }
+
+  return payload.analysis;
+};
+
+const usePerformanceData = (): PerformanceData => {
+  const [data, setData] = useState<PerformanceData>({
+    analysis: null,
+    attendanceSummary: [],
+    errorMessage: '',
+    isLoading: true,
+    profile: null,
+  });
+
+  useEffect(() => {
+    let ignore = false;
+    const session = readAuthSession();
+
+    const loadPerformance = async () => {
+      if (!session) {
+        if (!ignore) {
+          setData((current) => ({
+            ...current,
+            errorMessage: 'Sign in again to load AI performance analysis.',
+            isLoading: false,
+          }));
+        }
+        return;
+      }
+
+      try {
+        const headers = buildAuthHeaders(session.accessToken);
+        const [profile, attendanceResponse] = await Promise.all([
+          fetchMyProfile(session.accessToken),
+          fetch(`${getApiBaseUrl()}/api/attendance/summary`, { headers }),
+        ]);
+        const attendancePayload = (await attendanceResponse.json().catch(() => null)) as { summary?: ApiAttendanceSummary[]; message?: string } | null;
+
+        if (!attendanceResponse.ok) {
+          throw new Error(attendancePayload?.message || 'Unable to load attendance summary right now.');
+        }
+
+        const attendanceSummary = attendancePayload?.summary ?? [];
+        const attendancePercentage = calculateAttendance(attendanceSummary);
+        const analysis = await requestPerformanceAnalysis(
+          session.accessToken,
+          profile.currentGpa,
+          profile.earnedCredits,
+          attendancePercentage,
+          attendanceSummary,
+        );
+
+        if (!ignore) {
+          setData({
+            analysis,
+            attendanceSummary,
+            errorMessage: '',
+            isLoading: false,
+            profile,
+          });
+        }
+      } catch (error) {
+        if (!ignore) {
+          setData((current) => ({
+            ...current,
+            errorMessage: getAuthRequestErrorMessage(error, 'Unable to load performance right now.'),
+            isLoading: false,
+          }));
+        }
+      }
+    };
+
+    void loadPerformance();
+
+    return () => {
+      ignore = true;
+    };
+  }, []);
+
+  return data;
+};
+
 export default function PerformanceDashboard() {
   const [trajectoryMode, setTrajectoryMode] = useState<TrajectoryMode>('gpa');
-  const activeSeries = trajectorySeries[trajectoryMode];
+  const performanceData = usePerformanceData();
+  const currentGpa = performanceData.profile?.currentGpa ?? null;
+  const earnedCredits = performanceData.profile?.earnedCredits ?? null;
+  const attendancePercentage = useMemo(
+    () => calculateAttendance(performanceData.attendanceSummary),
+    [performanceData.attendanceSummary],
+  );
+  const performanceScore =
+    performanceData.analysis?.performanceScore ??
+    (currentGpa === null ? attendancePercentage : Math.round(((currentGpa / 4) * 100) * 0.65 + attendancePercentage * 0.35));
+  const activeSeries = useMemo(
+    () => buildTrajectorySeries(trajectoryMode, currentGpa, attendancePercentage),
+    [attendancePercentage, currentGpa, trajectoryMode],
+  );
+  const strongestCourse = performanceData.attendanceSummary.slice().sort((a, b) => b.attendancePercentage - a.attendancePercentage)[0] ?? null;
 
   return (
     <div className="mx-auto max-w-[1120px] space-y-6">
+      {performanceData.errorMessage ? (
+        <p className="rounded-[18px] border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-700">
+          {performanceData.errorMessage}
+        </p>
+      ) : null}
+
       <div className="grid gap-5 xl:grid-cols-[minmax(0,1.4fr)_250px_250px]">
         <section className="rounded-[28px] border border-[#eadcf7] bg-white px-7 py-7 shadow-[0_28px_44px_-38px_rgba(95,41,210,0.7)]">
-          <p className="text-[0.82rem] font-semibold uppercase tracking-[0.32em] text-[#6d5b87]">Cumulative Achievement</p>
+          <p className="text-[0.82rem] font-semibold uppercase tracking-[0.32em] text-[#6d5b87]">GPA Achievement</p>
           <div className="mt-5 flex items-end gap-3">
-            <span className="text-[3.1rem] font-bold tracking-[-0.08em] text-[#6d38de]">3.82</span>
+            <span className="text-[3.1rem] font-bold tracking-[-0.08em] text-[#6d38de]">
+              {performanceData.isLoading ? '...' : currentGpa === null ? '--' : currentGpa.toFixed(2)}
+            </span>
             <span className="pb-2 text-[1.55rem] text-[#4f3d6c]">GPA</span>
           </div>
-          <p className="mt-3 inline-flex items-center gap-2 text-[1.15rem] font-medium text-[#0f9d69]">
+          <p className="mt-3 inline-flex items-center gap-2 text-[1.05rem] font-medium text-[#0f9d69]">
             <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
               <path d="m5 15 4-4 3 3 7-7" strokeLinecap="round" strokeLinejoin="round" />
             </svg>
-            +0.12 from last term
+            From your backend profile
           </p>
         </section>
 
         <section className="rounded-[28px] border border-[#eadcf7] bg-white px-6 py-7 shadow-[0_28px_44px_-38px_rgba(95,41,210,0.7)]">
-          <p className="text-[0.82rem] font-semibold uppercase tracking-[0.32em] text-[#6d5b87]">Class Rank</p>
+          <p className="text-[0.82rem] font-semibold uppercase tracking-[0.32em] text-[#6d5b87]">Attendance</p>
           <div className="mt-5 flex items-end gap-2">
-            <span className="text-[2.55rem] font-bold tracking-[-0.07em] text-[#2a1842]">Top 5</span>
+            <span className="text-[2.55rem] font-bold tracking-[-0.07em] text-[#2a1842]">{performanceData.isLoading ? '...' : attendancePercentage}</span>
             <span className="pb-2 text-[1.45rem] text-[#4f3d6c]">%</span>
           </div>
           <div className="mt-6 h-2.5 rounded-full bg-[#efe4fb]">
-            <div className="h-2.5 w-[92%] rounded-full bg-[linear-gradient(90deg,#6d38de_0%,#4f46e5_100%)] shadow-[0_10px_18px_-16px_rgba(79,70,229,1)]" />
+            <div className="h-2.5 rounded-full bg-[linear-gradient(90deg,#6d38de_0%,#4f46e5_100%)] shadow-[0_10px_18px_-16px_rgba(79,70,229,1)]" style={{ width: `${attendancePercentage}%` }} />
           </div>
         </section>
 
         <section className="rounded-[28px] border border-[#eadcf7] bg-white px-6 py-7 shadow-[0_28px_44px_-38px_rgba(95,41,210,0.7)]">
-          <p className="text-[0.82rem] font-semibold uppercase tracking-[0.32em] text-[#6d5b87]">Total Credits</p>
+          <p className="text-[0.82rem] font-semibold uppercase tracking-[0.32em] text-[#6d5b87]">Credits</p>
           <div className="mt-5 flex items-end gap-2">
-            <span className="text-[2.45rem] font-bold tracking-[-0.07em] text-[#2a1842]">112</span>
-            <span className="pb-2 text-[1.45rem] text-[#4f3d6c]">/140</span>
+            <span className="text-[2.45rem] font-bold tracking-[-0.07em] text-[#2a1842]">{earnedCredits ?? '--'}</span>
+            <span className="pb-2 text-[1.45rem] text-[#4f3d6c]">earned</span>
           </div>
-          <p className="mt-4 text-[1.05rem] text-[#6b5a88]">Senior Status approaching</p>
+          <p className="mt-4 text-[1.05rem] text-[#6b5a88]">{performanceData.profile?.department ?? 'Profile department not set'}</p>
         </section>
       </div>
 
@@ -95,8 +255,8 @@ export default function PerformanceDashboard() {
         <section className="rounded-[30px] border border-[#eadcf7] bg-white p-6 shadow-[0_28px_46px_-38px_rgba(95,41,210,0.7)]">
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div>
-              <h2 className="text-[1.7rem] font-bold tracking-[-0.04em] text-[#2a1842]">Grade Trajectory</h2>
-              <p className="mt-2 text-[0.96rem] text-[#6b5a88]">Monthly GPA progression across academic year</p>
+              <h2 className="text-[1.7rem] font-bold tracking-[-0.04em] text-[#2a1842]">Performance Trajectory</h2>
+              <p className="mt-2 text-[0.96rem] text-[#6b5a88]">Derived from GPA and teacher-signed attendance.</p>
             </div>
 
             <div className="flex items-center rounded-[18px] bg-[#f2e5ff] p-1.5">
@@ -111,12 +271,12 @@ export default function PerformanceDashboard() {
               </button>
               <button
                 type="button"
-                onClick={() => startTransition(() => setTrajectoryMode('scores'))}
+                onClick={() => startTransition(() => setTrajectoryMode('attendance'))}
                 className={`rounded-[14px] px-4 py-2 text-sm font-medium transition ${
-                  trajectoryMode === 'scores' ? 'bg-white text-[#5d34df] shadow-[0_10px_20px_-18px_rgba(93,52,223,0.75)]' : 'text-[#64547e]'
+                  trajectoryMode === 'attendance' ? 'bg-white text-[#5d34df] shadow-[0_10px_20px_-18px_rgba(93,52,223,0.75)]' : 'text-[#64547e]'
                 }`}
               >
-                Scores
+                Attendance
               </button>
             </div>
           </div>
@@ -147,7 +307,7 @@ export default function PerformanceDashboard() {
                               ? 'bg-[linear-gradient(180deg,#a788f5_0%,#6d38de_100%)] shadow-[0_20px_26px_-22px_rgba(109,56,222,1)]'
                               : 'bg-[linear-gradient(180deg,#d7c8f7_0%,#bea8f0_100%)]'
                           }`}
-                          style={{ height: `${point.value}%` }}
+                          style={{ height: `${Math.max(point.value, 4)}%` }}
                         />
                       </div>
                       <span className="pt-2 text-[0.95rem] font-semibold uppercase tracking-[0.18em] text-[#5f4a79]">
@@ -166,52 +326,32 @@ export default function PerformanceDashboard() {
             <div className="flex items-center gap-5">
               <div
                 className="grid h-[102px] w-[102px] place-items-center rounded-full"
-                style={{ background: 'conic-gradient(#b12e60 0deg 317deg, #f2e5f0 317deg 360deg)' }}
+                style={{ background: `conic-gradient(#b12e60 0deg ${performanceScore * 3.6}deg, #f2e5f0 ${performanceScore * 3.6}deg 360deg)` }}
               >
                 <div className="grid h-[78px] w-[78px] place-items-center rounded-full bg-white text-center">
                   <div>
-                    <p className="text-[1.9rem] font-bold tracking-[-0.06em] text-[#2a1842]">88</p>
+                    <p className="text-[1.9rem] font-bold tracking-[-0.06em] text-[#2a1842]">{performanceData.isLoading ? '...' : performanceScore}</p>
                     <p className="text-[0.72rem] font-semibold uppercase tracking-[0.18em] text-[#6d5b87]">Score</p>
                   </div>
                 </div>
               </div>
 
               <div>
-                <h3 className="text-[1.65rem] font-bold leading-tight tracking-[-0.04em] text-[#2a1842]">Engagement Metric</h3>
+                <h3 className="text-[1.65rem] font-bold leading-tight tracking-[-0.04em] text-[#2a1842]">AI Metric</h3>
                 <p className="mt-3 text-[0.94rem] leading-7 text-[#6b5a88]">
-                  Reflects participation and lecture attendance.
+                  Blends GPA with attendance consistency.
                 </p>
               </div>
             </div>
           </section>
 
           <section className="rounded-[28px] border border-[#e5d6f7] bg-[#f5ecff] px-6 py-6 shadow-[0_28px_44px_-38px_rgba(95,41,210,0.55)]">
-            <h3 className="text-[1.5rem] font-bold tracking-[-0.04em] text-[#5d34df]">Peer Benchmark</h3>
-
-            <div className="mt-8 space-y-6">
-              <div>
-                <div className="flex items-center justify-between gap-4 text-[0.9rem] font-semibold uppercase tracking-[0.16em]">
-                  <span className="text-[#2a1842]">Your Score</span>
-                  <span className="text-[#5d34df]">94%</span>
-                </div>
-                <div className="mt-3 h-2.5 rounded-full bg-[#ebe0fa]">
-                  <div className="h-2.5 w-[94%] rounded-full bg-[#6d38de]" />
-                </div>
-              </div>
-
-              <div>
-                <div className="flex items-center justify-between gap-4 text-[0.9rem] font-semibold uppercase tracking-[0.16em]">
-                  <span className="text-[#6b5a88]">Class Avg</span>
-                  <span className="text-[#6b5a88]">76%</span>
-                </div>
-                <div className="mt-3 h-2.5 rounded-full bg-[#ebe0fa]">
-                  <div className="h-2.5 w-[76%] rounded-full bg-[#bcaed2]" />
-                </div>
-              </div>
-            </div>
-
-            <p className="mt-6 text-[0.92rem] italic leading-7 text-[#7c5ce6]">
-              You are performing 23% better than the peer average.
+            <h3 className="text-[1.5rem] font-bold tracking-[-0.04em] text-[#5d34df]">Performance Band</h3>
+            <p className="mt-5 text-[2rem] font-bold tracking-[-0.05em] text-[#2a1842]">
+              {performanceData.analysis?.band ?? 'Analyzing'}
+            </p>
+            <p className="mt-4 text-[0.92rem] italic leading-7 text-[#7c5ce6]">
+              {performanceData.analysis?.summary ?? 'AI analysis will appear after backend metrics load.'}
             </p>
           </section>
         </div>
@@ -219,28 +359,37 @@ export default function PerformanceDashboard() {
 
       <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_380px]">
         <section className="rounded-[30px] border border-[#eadcf7] bg-white p-6 shadow-[0_28px_46px_-38px_rgba(95,41,210,0.7)]">
-          <h2 className="text-[1.7rem] font-bold tracking-[-0.04em] text-[#2a1842]">Discipline Mastery</h2>
+          <h2 className="text-[1.7rem] font-bold tracking-[-0.04em] text-[#2a1842]">Attendance Mastery</h2>
 
           <div className="mt-6 grid gap-6 md:grid-cols-2">
-            {disciplineStats.map((discipline) => (
-              <article key={discipline.name} className="space-y-4">
+            {performanceData.attendanceSummary.map((course, index) => (
+              <article key={course.courseId} className="space-y-4">
                 <div className="flex items-center justify-between gap-4">
-                  <h3 className="text-[1rem] font-semibold text-[#28163f]">{discipline.name}</h3>
-                  <span className="text-[0.94rem] font-medium text-[#5d34df]">{discipline.level}</span>
+                  <h3 className="text-[1rem] font-semibold text-[#28163f]">{course.courseName}</h3>
+                  <span className="text-[0.94rem] font-medium text-[#5d34df]">{course.attendancePercentage}%</span>
                 </div>
                 <div className="h-2.5 rounded-full bg-[#efe5fb]">
-                  <div className={`h-2.5 rounded-full ${discipline.tone}`} style={{ width: `${discipline.progress}%` }} />
+                  <div className={`h-2.5 rounded-full ${courseTones[index % courseTones.length]}`} style={{ width: `${course.attendancePercentage}%` }} />
                 </div>
               </article>
             ))}
           </div>
+
+          {!performanceData.isLoading && performanceData.attendanceSummary.length === 0 ? (
+            <p className="mt-6 rounded-[18px] border border-[#eadcf7] bg-[#fcfaff] px-4 py-3 text-sm font-semibold text-[#5f4a79]">
+              No teacher-signed attendance records are available for performance analysis yet.
+            </p>
+          ) : null}
 
           <div className="mt-8 flex items-start gap-4 rounded-[22px] border border-[#eadcf7] bg-[#f8f1ff] px-5 py-5">
             <div className="grid h-11 w-11 shrink-0 place-items-center rounded-full bg-[#6d38de] text-white">
               <StarIcon />
             </div>
             <p className="text-[0.95rem] leading-7 text-[#5f4a79]">
-              <span className="font-semibold text-[#28163f]">Faculty Insight:</span> Your computational logic remains your strongest asset. Consider bridging these skills into your Biology research projects for interdisciplinary synergy.
+              <span className="font-semibold text-[#28163f]">Data Insight:</span>{' '}
+              {strongestCourse
+                ? `${strongestCourse.courseName} is currently the strongest attendance signal in your performance profile.`
+                : 'Attendance and GPA will combine here after teachers mark records.'}
             </p>
           </div>
         </section>
@@ -250,37 +399,41 @@ export default function PerformanceDashboard() {
             <div className="grid h-10 w-10 place-items-center rounded-full bg-white/10">
               <StarIcon />
             </div>
-            <p className="text-[0.95rem] font-semibold uppercase tracking-[0.14em]">AI Curator Insights</p>
+            <p className="text-[0.95rem] font-semibold uppercase tracking-[0.14em]">AI Performance Analysis</p>
           </div>
 
-          <div className="mt-10 space-y-10">
+          <div className="mt-10 space-y-8">
             <div>
               <div className="flex items-center gap-3">
                 <span className="h-2.5 w-2.5 rounded-full bg-[#26d07c]" />
-                <h3 className="text-[1.55rem] font-semibold tracking-[-0.03em]">Core Strength: Analytical Writing</h3>
+                <h3 className="text-[1.45rem] font-semibold tracking-[-0.03em]">Strengths</h3>
               </div>
-              <p className="mt-4 text-[1.05rem] leading-9 text-white/78">
-                Your lab reports show consistently high structure scores, placing you in the top 3% of faculty ratings.
-              </p>
+              <ul className="mt-4 space-y-3 text-[1.02rem] leading-8 text-white/78">
+                {(performanceData.analysis?.strengths.length ? performanceData.analysis.strengths : ['Loading GPA and attendance signals...']).map((item) => (
+                  <li key={item}>{item}</li>
+                ))}
+              </ul>
             </div>
 
             <div>
               <div className="flex items-center gap-3">
                 <span className="h-2.5 w-2.5 rounded-full bg-[#ffbf1f]" />
-                <h3 className="text-[1.8rem] font-semibold tracking-[-0.03em]">Improvement: Literature Syntax</h3>
+                <h3 className="text-[1.45rem] font-semibold tracking-[-0.03em]">Improve Next</h3>
               </div>
-              <p className="mt-4 text-[1.05rem] leading-9 text-white/78">
-                Review sessions for &apos;Romanticism&apos; are scheduled next Tuesday. Attendance is highly recommended to boost mid-term potential.
-              </p>
+              <ul className="mt-4 space-y-3 text-[1.02rem] leading-8 text-white/78">
+                {(performanceData.analysis?.improvements.length ? performanceData.analysis.improvements : ['AI recommendations will appear after analysis.']).map((item) => (
+                  <li key={item}>{item}</li>
+                ))}
+              </ul>
             </div>
           </div>
 
-          <button className="mt-12 inline-flex w-full items-center justify-center gap-3 rounded-[20px] bg-[linear-gradient(135deg,#7b47ed_0%,#5d34df_100%)] px-6 py-5 text-xl font-semibold text-white shadow-[0_20px_32px_-18px_rgba(93,52,223,0.95)] transition hover:scale-[1.01]">
-            Open Personalized Study Plan
-            <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-              <path d="M5 12h14M13 5l7 7-7 7" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
-          </button>
+          <div className="mt-10 rounded-[20px] bg-white/10 px-5 py-5">
+            <p className="text-[0.82rem] font-semibold uppercase tracking-[0.16em] text-white/65">Recommendation</p>
+            <p className="mt-3 text-[1.02rem] leading-8 text-white/82">
+              {performanceData.analysis?.recommendation ?? 'Waiting for AI analysis.'}
+            </p>
+          </div>
         </section>
       </div>
     </div>

@@ -1,3 +1,3 @@
-import drizzleConfig = require("./drizzle/drizzle.config");
+import drizzleConfig from "./drizzle/drizzle.config";
 
-export = drizzleConfig;
+export default drizzleConfig;
